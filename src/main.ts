@@ -12,7 +12,7 @@ import { SandboxService } from "./services/sandboxService.js";
 const config = loadConfig();
 const runtime = new GvisorDockerRuntime(new Docker(), config.image, config.maxOutputBytes, config.maxFileBytes);
 
-// Refuse to start without gVisor (S1). A clear message beats a silent runc fallback.
+// Refuse to start without gVisor instead of silently running on runc.
 try {
   await runtime.init();
 } catch (e) {
@@ -53,8 +53,10 @@ const server = serve({ fetch: createApp(service, appOptions).fetch, hostname: co
   console.log(`agentbox listening on http://${info.address}:${info.port} (image ${config.image}, runtime runsc)`);
 });
 
-// State is in memory, so after a restart these sandboxes would be orphans anyway;
-// remove them now rather than leaving containers running.
+/**
+ * State is in memory, so after a restart these sandboxes would be orphans anyway;
+ * remove them now rather than leaving containers running.
+ */
 async function shutdown(signal: string): Promise<void> {
   console.log(`agentbox: ${signal} received, destroying sandboxes`);
   clearInterval(reaper);

@@ -7,8 +7,10 @@ import type { SandboxRepository } from "../repositories/sandboxRepository.js";
 import type { OutputListener, SandboxRuntime } from "../runtime/sandboxRuntime.js";
 import { resolveWorkspacePath } from "./workspacePath.js";
 
-// How long a gone sandbox stays visible in GET /sandboxes/:id after its TTL, so a
-// caller can still see "expired" or "destroyed" instead of a 404.
+/**
+ * How long a gone sandbox stays visible in GET /sandboxes/:id after its TTL, so a
+ * caller can still see "expired" or "destroyed" instead of a 404.
+ */
 const GONE_RETENTION_MS = 10 * 60 * 1000;
 
 export class SandboxService {
@@ -65,7 +67,7 @@ export class SandboxService {
     return this.sandboxes.findAll();
   }
 
-  // With onOutput, chunks are delivered as they arrive (F6); the result still holds everything.
+  // With onOutput, chunks are delivered as they arrive; the result still holds the full output.
   async exec(id: string, request: ExecRequest, onOutput?: OutputListener): Promise<ExecResult> {
     const timeoutMs = request.timeoutMs ?? this.config.defaultExecTimeoutMs;
     if (timeoutMs > this.config.maxExecTimeoutMs) {
@@ -74,7 +76,7 @@ export class SandboxService {
     return this.occupy(id, (handle) => this.runtime.exec(handle, request.cmd, timeoutMs, onOutput));
   }
 
-  // F7: files live under /workspace only. Returns the absolute path that was written.
+  // Files live under /workspace only. Returns the absolute path that was written.
   async writeFile(id: string, path: unknown, data: Buffer): Promise<string> {
     const absolute = resolveWorkspacePath(path);
     if (data.length > this.config.maxFileBytes) {
@@ -114,9 +116,10 @@ export class SandboxService {
     return sandbox;
   }
 
-  // One reaper pass: destroy expired sandboxes, forget long-gone records, and remove
-  // containers the runtime still has that this server does not know about.
-  // main.ts calls this on a timer and once at startup.
+  /**
+   * One reaper pass: destroy expired sandboxes, forget long-gone records, and remove
+   * containers the runtime still has that this server does not know about.
+   */
   async reap(): Promise<{ expired: string[]; orphans: string[] }> {
     const now = this.clock.now().getTime();
     const expired: string[] = [];
@@ -153,7 +156,7 @@ export class SandboxService {
     }
   }
 
-  // Fill in server defaults and refuse anything above the server maximums (S3b).
+  // Fill in server defaults and refuse anything above the server maximums.
   private applyLimits(request: CreateSandboxRequest): SandboxLimits {
     const { defaults, maximums } = this.config;
     const limits: SandboxLimits = { ...defaults, ...request };

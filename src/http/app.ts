@@ -68,11 +68,13 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
     return c.json(result);
   });
 
-  // F6: same body as exec, but the response is a Server-Sent Events stream:
-  //   event: stdout | stderr   data: JSON string with the chunk
-  //   event: exit              data: { exitCode, durationMs, timedOut, truncated }
-  //   event: error             data: { error, message }   (only if exec fails after the stream began)
-  // A JSON string per chunk keeps embedded newlines intact across the SSE framing.
+  /**
+   * Same body as exec; the response is a Server-Sent Events stream.
+   *   event: stdout | stderr   data: JSON string with the chunk
+   *   event: exit              data: { exitCode, durationMs, timedOut, truncated }
+   *   event: error             data: { error, message }, only when exec fails after the stream began
+   * Each chunk is a JSON string so embedded newlines survive the SSE framing.
+   */
   app.post("/sandboxes/:id/exec/stream", async (c) => {
     const id = c.req.param("id");
     const request = parseExecRequest(await jsonBody(c));
@@ -96,7 +98,7 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
 
   app.delete("/sandboxes/:id", async (c) => c.json(view(await service.destroy(c.req.param("id")))));
 
-  // F7: raw bytes in and out, the path in the query string so the body stays unencoded.
+  // Raw bytes in and out; the path travels in the query string so the body stays unencoded.
   app.put("/sandboxes/:id/files", async (c) => {
     const data = Buffer.from(await c.req.arrayBuffer());
     const path = await service.writeFile(c.req.param("id"), c.req.query("path"), data);

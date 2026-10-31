@@ -1,5 +1,7 @@
-// Runs against real Docker with gVisor registered. Not part of `npm test`.
-//   npm run test:integration
+/**
+ * Runs against real Docker with gVisor registered. Not part of `npm test`.
+ *   npm run test:integration
+ */
 import assert from "node:assert/strict";
 import os from "node:os";
 import test, { after, before } from "node:test";

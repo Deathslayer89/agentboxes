@@ -2,9 +2,10 @@ import { timingSafeEqual } from "node:crypto";
 import type { MiddlewareHandler } from "hono";
 import { UnauthorizedError } from "../errors.js";
 
-// A1: one shared API key, sent as `Authorization: Bearer <key>`.
-// The comparison is constant-time so response timing does not leak how many
-// leading characters of a guess were right.
+/**
+ * One shared API key, sent as `Authorization: Bearer <key>`.
+ * The comparison is constant-time so response timing does not reveal how many leading characters matched.
+ */
 export function bearerAuth(apiKey: string): MiddlewareHandler {
   const expected = Buffer.from(apiKey);
   return async (c, next) => {

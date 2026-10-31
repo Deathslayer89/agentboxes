@@ -16,8 +16,10 @@ export class CounterIdGenerator implements IdGenerator {
   }
 }
 
-// prefix plus 12 hex chars (48 random bits): short enough to type into curl,
-// random enough that a caller cannot guess another caller's sandbox id.
+/**
+ * prefix plus 12 hex chars (48 random bits): short enough to type into curl,
+ * random enough that a caller cannot guess another caller's sandbox id.
+ */
 export class RandomIdGenerator implements IdGenerator {
   constructor(private readonly prefix: string) {}
 

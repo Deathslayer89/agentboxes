@@ -4,18 +4,22 @@ import { ConflictError, NotFoundError, RuntimeUnavailableError, ValidationError 
 import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
 import type { OutputListener, SandboxRuntime } from "./sandboxRuntime.js";
 
-// Docker runtime name for gVisor. Deliberately not configurable: S1 says never fall back to runc.
+// Docker runtime name for gVisor. Not configurable: there is no fallback to runc.
 const RUNTIME = "runsc";
 const WORKSPACE = "/workspace";
 // uid:gid of "nobody" in Debian based images. The sandbox never runs as root (S5).
 const SANDBOX_UID = 65534;
 const SANDBOX_USER = `${SANDBOX_UID}:${SANDBOX_UID}`;
-// Every container we create carries LABEL=1 plus its sandbox id, so the reaper can match
-// containers to records and remove the ones nobody knows about.
+/**
+ * Every container we create carries LABEL=1 plus its sandbox id, so the reaper can match
+ * containers to records and remove the ones nobody knows about.
+ */
 const LABEL = "agentbox";
 const LABEL_ID = "agentbox.id";
-// If the in-sandbox `timeout` has not ended the exec this long after its deadline,
-// kill the whole container.
+/**
+ * If the in-sandbox `timeout` has not ended the exec this long after its deadline,
+ * kill the whole container.
+ */
 const GUARD_MS = 5_000;
 // File reads and writes are plain `cat`; this only matters if the path is a FIFO.
 const FILE_TIMEOUT_MS = 30_000;
@@ -84,9 +88,10 @@ export class GvisorDockerRuntime implements SandboxRuntime {
       User: SANDBOX_USER,
       WorkingDir: WORKSPACE,
       Hostname: sandboxId,
-      // HOME inside the writable area so tools like pip can write caches.
-      // PYTHONUNBUFFERED so output arrives line by line (needed for streaming on Day 2).
-      Env: [`HOME=${WORKSPACE}`, "PYTHONUNBUFFERED=1"],
+      Env: [
+        `HOME=${WORKSPACE}`, // pip and similar tools write their caches under the writable workspace
+        "PYTHONUNBUFFERED=1", // python output arrives line by line instead of at exit
+      ],
       Labels: { [LABEL]: "1", [LABEL_ID]: sandboxId },
       HostConfig: {
         Runtime: RUNTIME, // S1: gVisor
@@ -127,8 +132,10 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     };
   }
 
-  // `docker cp` cannot see /workspace: under gVisor the tmpfs lives inside the sandbox,
-  // not on the host. So files travel through exec, on stdin for writes and stdout for reads.
+  /**
+   * `docker cp` cannot see /workspace: under gVisor the tmpfs lives inside the sandbox,
+   * not on the host. So files travel through exec, on stdin for writes and stdout for reads.
+   */
   async writeFile(handle: string, path: string, data: Buffer): Promise<void> {
     const script = 'mkdir -p "$(dirname -- "$1")" && cat > "$1"';
     const r = await this.run(handle, ["sh", "-c", script, "sh", path], FILE_TIMEOUT_MS, { stdin: data });
@@ -155,8 +162,10 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     return containers.map((c) => ({ sandboxId: c.Labels[LABEL_ID] ?? "", handle: c.Id }));
   }
 
-  // Runs one command inside the container under coreutils `timeout`, which kills the
-  // command's whole process group at the deadline (exit code 137 = killed by SIGKILL).
+  /**
+   * Runs one command inside the container under coreutils `timeout`, which kills the
+   * command's whole process group at the deadline (exit code 137 = killed by SIGKILL).
+   */
   private async run(handle: string, cmd: string[], timeoutMs: number, options: RunOptions): Promise<RunResult> {
     const container = this.docker.getContainer(handle);
     const limit = options.limit ?? this.maxOutputBytes;
@@ -178,8 +187,10 @@ export class GvisorDockerRuntime implements SandboxRuntime {
       this.docker.modem.demuxStream(stream, stdout, stderr);
       if (options.stdin !== undefined) stream.end(options.stdin);
 
-      // Backstop for a process that keeps the output pipe open past the deadline
-      // (for example a daemonised grandchild). The sandbox is lost in that case.
+      /**
+       * Backstop for a process that keeps the output pipe open past the deadline
+       * (for example a daemonised grandchild). The sandbox is lost in that case.
+       */
       const guard = setTimeout(() => {
         container.kill().catch(() => {});
         stream.destroy();
@@ -210,8 +221,10 @@ export class GvisorDockerRuntime implements SandboxRuntime {
   }
 }
 
-// Keeps at most `limit` bytes; the rest is dropped so one noisy command cannot
-// exhaust the server's memory. Every chunk still reaches the listener in full.
+/**
+ * Keeps at most `limit` bytes; the rest is dropped so one noisy command cannot
+ * exhaust the server's memory. Every chunk still reaches the listener in full.
+ */
 class OutputBuffer extends Writable {
   private readonly chunks: Buffer[] = [];
   private size = 0;
@@ -252,8 +265,10 @@ function messageOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-// 404 (container removed) and 409 (container not running) both mean the sandbox is
-// gone from under the caller: a conflict with the sandbox's state, not a server bug.
+/**
+ * 404 (container removed) and 409 (container not running) both mean the sandbox is
+ * gone from under the caller: a conflict with the sandbox's state, not a server bug.
+ */
 function translateDockerError(e: unknown): unknown {
   const status = statusCodeOf(e);
   if (status === 404 || status === 409) return new ConflictError(`sandbox is no longer running: ${messageOf(e)}`);

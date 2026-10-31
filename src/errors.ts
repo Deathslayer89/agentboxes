@@ -1,5 +1,7 @@
-// One base class so the HTTP layer can tell expected errors (mapped to a status code)
-// from bugs (500 plus a stack trace in the log).
+/**
+ * One base class so the HTTP layer can tell expected errors (mapped to a status code)
+ * from bugs (500 plus a stack trace in the log).
+ */
 export class DomainError extends Error {
   constructor(message: string) {
     super(message);
