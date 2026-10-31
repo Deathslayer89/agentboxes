@@ -48,7 +48,9 @@ test("create, exec, files, stream, destroy", async () => {
   assert.equal(r.stdout, "python -c print(2+2)");
   assert.equal(runtime.execCalls.at(-1)?.options.timeoutMs, 1000);
   await box.exec(["pytest"], { cwd: "tests", env: { PYTHONPATH: "/workspace" } });
-  assert.deepEqual(runtime.execCalls.at(-1)?.options, { timeoutMs: 30_000, cwd: "/workspace/tests", env: { PYTHONPATH: "/workspace" } });
+  // Over HTTP the request's abort signal rides along; only the caller's options are compared.
+  const { timeoutMs, cwd, env } = runtime.execCalls.at(-1)?.options ?? {};
+  assert.deepEqual({ timeoutMs, cwd, env }, { timeoutMs: 30_000, cwd: "/workspace/tests", env: { PYTHONPATH: "/workspace" } });
 
   await box.writeFile("src/main.py", "print('hi')");
   assert.equal(await box.readFile("src/main.py"), "print('hi')");

@@ -86,7 +86,8 @@ test("S5: not root, and no capabilities", async () => {
 test("S6: no docker socket, and the host's environment is not visible", async () => {
   assert.notEqual((await run(["test", "-e", "/var/run/docker.sock"])).exitCode, 0);
   const env = await run(["env"]);
-  assert.doesNotMatch(env.stdout, /AGENTBOX|DOCKER_HOST|^PATH=.*\/home\//m);
+  // AGENTBOX_EXEC_ID is the per-command marker the server plants on purpose; nothing else of the host's may show.
+  assert.doesNotMatch(env.stdout, /AGENTBOX_(?!EXEC_ID=)|DOCKER_HOST|^PATH=.*\/home\//m);
 });
 
 test("F3/F4: destroy, then exec is a conflict and the record says destroyed", async () => {
@@ -272,4 +273,24 @@ test("F7: a directory tree goes in as one archive, runs, and comes back out", as
     rmSync(dir, { recursive: true, force: true });
     rmSync(out, { recursive: true, force: true });
   }
+});
+
+test("S3: an aborted exec is killed inside the sandbox, and the sandbox keeps working", async () => {
+  const abort = new AbortController();
+  const running = service.exec(id, { cmd: ["sh", "-c", "sleep 300; echo finished"], timeoutMs: 60_000 }, undefined, abort.signal);
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  abort.abort();
+  const r = await running;
+  assert.equal(r.exitCode, 137);
+  assert.ok(r.durationMs < 5_000, `took ${r.durationMs} ms`);
+  // The kill runs detached, so give it a moment; count only processes whose command line is exactly "sleep 300".
+  let left = "";
+  for (let i = 0; i < 20; i++) {
+    const check = await service.exec(id, { cmd: ["sh", "-c", "for p in /proc/[0-9]*; do [ \"$(tr '\\0' ' ' < $p/cmdline 2>/dev/null)\" = 'sleep 300 ' ] && echo $p; done; true"] });
+    left = check.stdout.trim();
+    if (left === "") break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal(left, "", `sleep processes still alive: ${left}`);
+  assert.equal((await service.exec(id, { cmd: ["echo", "alive"] })).stdout.trim(), "alive");
 });

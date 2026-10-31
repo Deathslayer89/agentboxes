@@ -127,12 +127,12 @@ export class SandboxService {
   }
 
   // With onOutput, chunks are delivered as they arrive; the result still holds the full output.
-  async exec(id: string, request: ExecRequest, onOutput?: OutputListener): Promise<ExecResult> {
+  async exec(id: string, request: ExecRequest, onOutput?: OutputListener, signal?: AbortSignal): Promise<ExecResult> {
     const timeoutMs = request.timeoutMs ?? this.config.defaultExecTimeoutMs;
     if (timeoutMs > this.config.maxExecTimeoutMs) {
       throw new ValidationError(`timeoutMs ${timeoutMs} exceeds the server maximum of ${this.config.maxExecTimeoutMs}`);
     }
-    const options = { timeoutMs, cwd: resolveWorkspaceDir(request.cwd ?? "/workspace"), env: request.env ?? {} };
+    const options = { timeoutMs, cwd: resolveWorkspaceDir(request.cwd ?? "/workspace"), env: request.env ?? {}, ...(signal === undefined ? {} : { signal }) };
     return this.occupy(id, (handle) => this.runtime.exec(handle, request.cmd, options, onOutput));
   }
 

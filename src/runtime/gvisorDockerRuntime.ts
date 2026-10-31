@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import Docker from "dockerode";
 import { Writable } from "node:stream";
 import { ConflictError, NotFoundError, RuntimeUnavailableError, ValidationError } from "../errors.js";
@@ -34,6 +35,8 @@ interface RunOptions {
   cwd?: string;
   // Extra environment for this command only.
   env?: Record<string, string>;
+  // Kills the command when aborted.
+  signal?: AbortSignal;
   // Called with each chunk as it arrives (F6 streaming).
   onOutput?: OutputListener;
   // Cap per stream on what is kept in memory. Defaults to maxOutputBytes.
@@ -166,7 +169,12 @@ export class GvisorDockerRuntime implements SandboxRuntime {
   }
 
   async exec(handle: string, cmd: string[], options: ExecOptions, onOutput?: OutputListener): Promise<ExecResult> {
-    const r = await this.run(handle, cmd, options.timeoutMs, { cwd: options.cwd, env: options.env, ...(onOutput === undefined ? {} : { onOutput }) });
+    const r = await this.run(handle, cmd, options.timeoutMs, {
+      cwd: options.cwd,
+      env: options.env,
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(onOutput === undefined ? {} : { onOutput }),
+    });
     return {
       exitCode: r.exitCode,
       stdout: r.stdout.toString("utf8"),
@@ -233,6 +241,10 @@ export class GvisorDockerRuntime implements SandboxRuntime {
   private async run(handle: string, cmd: string[], timeoutMs: number, options: RunOptions): Promise<RunResult> {
     const container = this.docker.getContainer(handle);
     const limit = options.limit ?? this.maxOutputBytes;
+    // A marker in the command's environment is how an aborted command is found and killed.
+    const marker = `AGENTBOX_EXEC_ID=${randomBytes(8).toString("hex")}`;
+    const onAbort = () => void this.killByMarker(container, marker).catch(() => {});
+    options.signal?.addEventListener("abort", onAbort, { once: true });
     try {
       const exec = await container.exec({
         Cmd: ["timeout", "-s", "KILL", String(timeoutMs / 1000), ...cmd],
@@ -240,7 +252,7 @@ export class GvisorDockerRuntime implements SandboxRuntime {
         AttachStdout: true,
         AttachStderr: true,
         WorkingDir: options.cwd ?? WORKSPACE,
-        Env: Object.entries(options.env ?? {}).map(([key, value]) => `${key}=${value}`),
+        Env: [marker, ...Object.entries(options.env ?? {}).map(([key, value]) => `${key}=${value}`)],
       });
       const stdout = new OutputBuffer(limit, (chunk) => options.onOutput?.("stdout", chunk));
       const stderr = new OutputBuffer(limit, (chunk) => options.onOutput?.("stderr", chunk));
@@ -282,7 +294,24 @@ export class GvisorDockerRuntime implements SandboxRuntime {
       };
     } catch (e) {
       throw translateDockerError(e);
+    } finally {
+      options.signal?.removeEventListener("abort", onAbort);
     }
+  }
+
+  // Kills every process in the sandbox whose environment carries the marker.
+  private async killByMarker(container: Docker.Container, marker: string): Promise<void> {
+    const script = 'for p in /proc/[0-9]*; do if grep -qz -- "$1" "$p/environ" 2>/dev/null; then kill -9 "${p#/proc/}"; fi; done';
+    const exec = await container.exec({ Cmd: ["sh", "-c", script, "sh", marker], AttachStdout: false, AttachStderr: false });
+    // The detached start still answers with a response stream; left unread it keeps the process alive.
+    const stream = await exec.start({ Detach: true });
+    stream.resume();
+    await new Promise<void>((resolve) => {
+      stream.once("end", resolve);
+      stream.once("close", resolve);
+      stream.once("error", resolve);
+      stream.destroy();
+    });
   }
 }
 

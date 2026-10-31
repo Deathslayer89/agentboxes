@@ -71,8 +71,9 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
 
   app.get("/sandboxes/:id", (c) => c.json(view(service.get(c.req.param("id")))));
 
+  // A client that goes away takes its command with it.
   app.post("/sandboxes/:id/exec", async (c) => {
-    const result = await service.exec(c.req.param("id"), parseExecRequest(await jsonBody(c)));
+    const result = await service.exec(c.req.param("id"), parseExecRequest(await jsonBody(c)), undefined, c.req.raw.signal);
     return c.json(result);
   });
 
@@ -91,10 +92,15 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
       // One decoder per stream so a multibyte character split across chunks is not garbled.
       const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
       const send = (event: string, data: unknown) => stream.writeSSE({ event, data: JSON.stringify(data) }).catch(() => {});
+      const gone = new AbortController();
+      stream.onAbort(() => gone.abort());
       try {
-        const { exitCode, durationMs, timedOut, truncated } = await service.exec(id, request, (name, chunk) => {
-          void send(name, decoders[name].write(chunk));
-        });
+        const { exitCode, durationMs, timedOut, truncated } = await service.exec(
+          id,
+          request,
+          (name, chunk) => void send(name, decoders[name].write(chunk)),
+          gone.signal,
+        );
         await send("exit", { exitCode, durationMs, timedOut, truncated });
       } catch (err) {
         const known = err instanceof DomainError;

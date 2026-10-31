@@ -49,34 +49,42 @@ export class WarmPool {
     return next.handle;
   }
 
-  // Starts containers until `size` are ready or starting. Concurrent calls share one loop.
+  // Starts every missing container at once, so a burst of claims is refilled in one start's time. Concurrent calls share one fill.
   fill(): Promise<void> {
-    this.filling ??= this.fillLoop().finally(() => {
+    this.filling ??= this.fillMissing().finally(() => {
       this.filling = undefined;
     });
     return this.filling;
   }
 
-  private async fillLoop(): Promise<void> {
+  private async fillMissing(): Promise<void> {
     while (!this.closed && this.slots.size < this.size) {
-      this.counter += 1;
-      const slotId = `pool_${this.template}_${this.counter}`;
-      this.slots.add(slotId);
-      let handle: string;
-      try {
-        handle = await this.runtime.start(slotId, this.limits, this.image);
-      } catch (e) {
-        this.slots.delete(slotId);
-        console.error(`warm pool ${this.template}: could not start a container: ${e instanceof Error ? e.message : String(e)}`);
-        return; // the next claim or reaper pass tries again
-      }
-      if (this.closed) {
-        this.slots.delete(slotId);
-        await this.runtime.destroy(handle).catch(() => {});
-        return;
-      }
-      this.ready.push({ slotId, handle });
+      const starts: Promise<boolean>[] = [];
+      while (this.slots.size < this.size) starts.push(this.startOne());
+      const results = await Promise.all(starts);
+      if (results.includes(false)) return; // a failed start: the next claim or reaper pass tries again
     }
+  }
+
+  private async startOne(): Promise<boolean> {
+    this.counter += 1;
+    const slotId = `pool_${this.template}_${this.counter}`;
+    this.slots.add(slotId);
+    let handle: string;
+    try {
+      handle = await this.runtime.start(slotId, this.limits, this.image);
+    } catch (e) {
+      this.slots.delete(slotId);
+      console.error(`warm pool ${this.template}: could not start a container: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+    if (this.closed) {
+      this.slots.delete(slotId);
+      await this.runtime.destroy(handle).catch(() => {});
+      return false;
+    }
+    this.ready.push({ slotId, handle });
+    return true;
   }
 
   // Destroys every ready container and stops refilling. Used at shutdown.

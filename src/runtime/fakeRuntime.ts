@@ -11,6 +11,8 @@ export class FakeRuntime implements SandboxRuntime {
   readonly execCalls: Array<{ handle: string; cmd: string[]; options: ExecOptions }> = [];
   // When set, the next start() throws this instead of starting a container.
   startError: Error | undefined;
+  // When set, every start() waits on it, so a test can see starts in flight.
+  startGate: Promise<void> | undefined;
   // When set, merged into the next exec() result, for example { timedOut: true, exitCode: 137 }.
   nextExecResult: Partial<ExecResult> | undefined;
   private counter = 0;
@@ -23,6 +25,7 @@ export class FakeRuntime implements SandboxRuntime {
       this.startError = undefined;
       throw error;
     }
+    if (this.startGate !== undefined) await this.startGate;
     this.counter += 1;
     const handle = `ctr-${this.counter}`;
     this.containers.set(handle, { sandboxId, limits, image, egress, files: new Map() });

@@ -23,6 +23,8 @@ export interface ExecOptions {
   // Absolute, under /workspace.
   cwd: string;
   env: Record<string, string>;
+  // When aborted, the command is killed; the sandbox stays.
+  signal?: AbortSignal;
 }
 
 /**

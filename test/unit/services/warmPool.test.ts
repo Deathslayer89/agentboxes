@@ -33,12 +33,12 @@ test("a claim on an empty pool is a miss, and a size of 0 never starts anything"
   assert.equal(pool.stats().misses, 1);
 });
 
-test("a start failure stops the fill loop without spinning; the next fill retries", async () => {
+test("a failed start is not retried in a loop; the other starts finish and the next fill tops up", async () => {
   const runtime = new FakeRuntime();
   const pool = new WarmPool(runtime, limits, 2, "img", "default");
   runtime.startError = new Error("docker is down");
   await pool.fill();
-  assert.equal(pool.stats().ready, 0);
+  assert.equal(pool.stats().ready, 1);
   assert.equal(pool.stats().starting, 0);
   await pool.fill();
   assert.equal(pool.stats().ready, 2);
@@ -53,4 +53,17 @@ test("drain destroys the ready containers and stops refilling", async () => {
   await pool.fill();
   assert.equal(runtime.containers.size, 0);
   assert.equal(pool.claim(), undefined);
+});
+
+test("fill starts all missing containers at once", async () => {
+  const runtime = new FakeRuntime();
+  const pool = new WarmPool(runtime, limits, 3, "img", "default");
+  let release!: () => void;
+  runtime.startGate = new Promise<void>((resolve) => (release = resolve));
+  const filling = pool.fill();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(pool.stats().starting, 3, "all three starts are in flight before any finishes");
+  release();
+  await filling;
+  assert.equal(pool.stats().ready, 3);
 });
