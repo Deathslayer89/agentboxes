@@ -2,7 +2,7 @@
 
 Self-hosted sandboxes for AI agents. Runs on any Linux box with Docker and gVisor; no KVM needed.
 
-Status: v0.1 in progress. Create, exec, streaming exec, files, warm pool, templates, TTL reaper, API key, TypeScript SDK, the network allowlist and secret injection are here. The MCP server, the benchmark script and the threat model come next.
+Status: v0.1 in progress. Create, exec, streaming exec, files, warm pool, templates, TTL reaper, API key, TypeScript SDK, network allowlist, secret injection and the MCP server are here. The benchmark script and the threat model come next.
 
 ## Requirements
 
@@ -116,6 +116,32 @@ await box.destroy();
 
 Errors are typed: `SandboxNotFound` (404), `PoolExhausted` (the server's live sandbox limit, 429), `ExecTimeout` (the command was killed at its deadline; `error.result` holds the output so far) and `AgentboxError` for everything else, with `status` and the server's error `code`. `npm run example` runs `examples/sdk-basic.ts` against a local server and prints the time each step took.
 
+## MCP server for Claude Code and Cursor
+
+`npm run mcp` starts a Model Context Protocol server over stdio with five tools: `run_code` (python, bash or javascript), `run_command`, `write_file`, `read_file` and `reset_sandbox`. It keeps one sandbox per session, created on the first call and replaced after it expires. Start the agentbox server first, then register the MCP server.
+
+Claude Code:
+
+```bash
+claude mcp add agentbox -e AGENTBOX_URL=http://127.0.0.1:7788 -- npx tsx /path/to/agentbox/mcp/server.ts
+```
+
+Cursor (`.cursor/mcp.json`) or a project `.mcp.json` for Claude Code:
+
+```json
+{
+  "mcpServers": {
+    "agentbox": {
+      "command": "npx",
+      "args": ["tsx", "/path/to/agentbox/mcp/server.ts"],
+      "env": { "AGENTBOX_URL": "http://127.0.0.1:7788" }
+    }
+  }
+}
+```
+
+Environment for the MCP server: `AGENTBOX_URL`, `AGENTBOX_API_KEY`, `AGENTBOX_TEMPLATE`, `AGENTBOX_ALLOW_HOSTS` (comma separated, for example `pypi.org,files.pythonhosted.org`) and `AGENTBOX_TTL_SECONDS`.
+
 ## Templates
 
 A template is a Docker image with packages already installed, so a sandbox starts with them and never downloads at run time. Write a Dockerfile that starts `FROM python:3.12-slim` (the base image), install as root, and build it:
@@ -174,5 +200,6 @@ src/http/          routes, auth and request parsing
 src/cli.ts         `agentbox template build | list`
 proxy/             the egress proxy (plain Node, no dependencies) and its Dockerfile
 sdk/               the TypeScript client
+mcp/               the MCP server, built on the client
 test/              unit tests by area, and integration tests against real gVisor
 ```

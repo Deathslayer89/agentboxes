@@ -10,6 +10,7 @@
     "typecheck": "tsc",
     "agentbox": "tsx src/cli.ts",
     "example": "tsx examples/sdk-basic.ts",
+    "mcp": "tsx mcp/server.ts",
     "build:sdk": "tsc -p sdk/tsconfig.json",
     "test": "tsx --test test/unit/*/*.test.ts",
     "test:integration": "tsx --test test/integration/*.test.ts"
@@ -17,8 +18,10 @@
   "license": "MIT",
   "dependencies": {
     "@hono/node-server": "^2.1.5",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "dockerode": "^5.0.1",
-    "hono": "^4.13.14"
+    "hono": "^4.13.14",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/dockerode": "^4.0.2",
