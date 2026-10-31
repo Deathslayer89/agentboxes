@@ -34,7 +34,9 @@ The server listens on loopback and needs no auth until you say otherwise. To ser
 AGENTBOX_API_KEY=$(openssl rand -hex 16) HOST=0.0.0.0 npm start
 ```
 
-If you run the server in the background, stop it by sending SIGTERM to the `node ... src/main.ts` process (`pkill -f 'src/main.ts'`), not only to the npm wrapper in front of it.
+If you run the server in the background, `npm stop` sends SIGTERM to the server process using the pid file it writes next to its database (`data/agentbox.pid`). Killing only the npm wrapper in front of it leaves the server running.
+
+More than one key, each with its own limits: `AGENTBOX_API_KEYS="team-a:<key>:5:4096,bot:<key>"` is `name:key[:maxSandboxes[:maxMemoryMb]]`, comma separated, on top of `AGENTBOX_API_KEY` (the key named `default`). A key only sees the sandboxes it created; another key's sandbox answers 404. `maxMemoryMb` caps the sum of `memoryMb` over the key's live sandboxes, and the server-wide `MAX_SANDBOXES` still applies to everyone.
 
 ```bash
 # create a sandbox (all fields optional: template, memoryMb, cpus, diskMb, pids, ttlSeconds)
@@ -72,7 +74,7 @@ curl -s localhost:7788/sandboxes/sbx_...
 curl -s -X DELETE localhost:7788/sandboxes/sbx_...
 ```
 
-Sandbox records live in a SQLite file (`AGENTBOX_DB`, default `data/agentbox.db`). Stopping the server leaves sandboxes running; the next start adopts every sandbox whose container is still there, marks the others expired, and keeps using the egress proxy container from the previous run so allowlisted sandboxes keep their network. If Docker itself restarted, the proxy is gone and sandboxes that had a network are destroyed at startup, with a log line. A command whose client disconnects, or whose streaming response is aborted, is killed inside the sandbox; the sandbox itself stays. Sandboxes expire after `ttlSeconds` (default 600, max 3600) unless extended. A reaper removes expired ones and any container labelled `agentbox=1` that the server does not know about.
+Sandbox records live in a SQLite file (`AGENTBOX_DB`, default `data/agentbox.db`). Stopping the server leaves sandboxes running and removes the warm pool's containers; the next start adopts every sandbox whose container is still there, marks the others expired, removes anything left over (a pool container that was still starting shows up as "removed 1 orphaned container(s)"), and keeps using the egress proxy container from the previous run so allowlisted sandboxes keep their network. If Docker itself restarted, the proxy is gone and sandboxes that had a network are destroyed at startup, with a log line. While the server is down nothing enforces TTLs: sandboxes run until the next start reaps the expired ones. A command whose client disconnects, or whose streaming response is aborted, is killed inside the sandbox; the sandbox itself stays. Sandboxes expire after `ttlSeconds` (default 600, max 3600) unless extended. A reaper removes expired ones and any container labelled `agentbox=1` that the server does not know about.
 
 ## Warm pool
 
@@ -134,7 +136,7 @@ Errors are typed: `SandboxNotFound` (404), `PoolExhausted` (the server's live sa
 
 ## MCP server for Claude Code and Cursor
 
-`npm run mcp` starts a Model Context Protocol server over stdio with five tools: `run_code` (python, bash, or javascript with `AGENTBOX_TEMPLATE=node`), `run_command`, `write_file`, `read_file` and `reset_sandbox`. It keeps one sandbox per session, created on the first call, kept alive while in use, and destroyed when the client disconnects. Start the agentbox server first, then register the MCP server.
+`npm run mcp` starts a Model Context Protocol server over stdio with five tools: `run_code` (`language`: python, bash, or javascript with `AGENTBOX_TEMPLATE=node`; `code`; optional `timeoutMs`), `run_command` (`cmd` as an array, optional `cwd` and `timeoutMs`), `write_file` (`path`, `content`), `read_file` (`path`) and `reset_sandbox` (no arguments). It keeps one sandbox per session, created on the first call, kept alive while in use, and destroyed when the client disconnects. Start the agentbox server first, then register the MCP server.
 
 Claude Code:
 
@@ -157,6 +159,17 @@ Cursor (`.cursor/mcp.json`) or a project `.mcp.json` for Claude Code:
 ```
 
 Environment for the MCP server: `AGENTBOX_URL`, `AGENTBOX_API_KEY`, `AGENTBOX_TEMPLATE`, `AGENTBOX_ALLOW_HOSTS` (comma separated, for example `pypi.org,files.pythonhosted.org`) and `AGENTBOX_TTL_SECONDS`.
+
+## Python SDK
+
+`sdk-python/` is the same client for Python 3.9+, standard library only, not on PyPI yet (`pip install -e sdk-python`). Same methods in snake case, line-based `exec_stream`, `upload_directory` and `download_directory` through Python's `tarfile`, and the same typed errors. `npm run test:python` runs its tests against the HTTP app with the fake runtime, no Docker needed.
+
+```python
+from agentbox import Agentbox
+box = Agentbox("http://127.0.0.1:7788").create(allow_hosts=["pypi.org"])
+print(box.exec(["python", "-c", "print(2+2)"]).stdout)
+box.destroy()
+```
 
 ## Mastra example
 
@@ -247,7 +260,7 @@ Why `/workspace` is a tmpfs and not a disk volume: one Python process writing an
 
 - Not multi-node: one server per Docker host. Records are in SQLite and a server restart adopts running sandboxes, but a Docker restart loses the egress proxy's state.
 - Not KVM-level isolation: gVisor is a user-space kernel that handles most syscalls itself, but the host kernel still serves the ones it forwards, and the sentry runs as a host process.
-- Not multi-tenant: one API key for everyone who can reach the server. Per-key limits are planned for v0.2.
+- Not multi-tenant beyond API keys: keys partition sandboxes and carry limits, but they share one proxy, one pool and one Docker host.
 - Not disk-backed: `/workspace` is a tmpfs, so a large `node_modules` or repository is held in RAM, up to `diskMb`. Writing past `diskMb` fails with "no space left", not an OOM kill.
 - Not a preview host: nothing inside a sandbox is reachable from outside, and nothing is persisted after the TTL.
 
@@ -271,6 +284,7 @@ src/http/          routes, auth and request parsing
 src/cli.ts         `agentbox template build | list`
 proxy/             the egress proxy (plain Node, no dependencies) and its Dockerfile
 sdk/               the TypeScript client
+sdk-python/        the Python client
 mcp/               the MCP server, built on the client
 examples/          the SDK walkthrough and the Mastra agent
 test/              unit tests by area, and integration tests against real gVisor

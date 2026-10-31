@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node --import tsx src/main.ts",
+    "stop": "kill $(cat data/agentbox.pid)",
     "dev": "tsx watch src/main.ts",
     "typecheck": "tsc",
     "agentbox": "tsx src/cli.ts",
@@ -14,7 +15,8 @@
     "bench": "tsx bench/run.ts",
     "build:sdk": "tsc -p sdk/tsconfig.json",
     "test": "tsx --test test/unit/*/*.test.ts",
-    "test:integration": "tsx --test test/integration/*.test.ts"
+    "test:integration": "tsx --test test/integration/*.test.ts",
+    "test:python": "python3 -m unittest discover -s sdk-python/tests -v"
   },
   "license": "MIT",
   "dependencies": {

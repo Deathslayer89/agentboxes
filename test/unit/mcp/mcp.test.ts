@@ -32,7 +32,7 @@ const textOf = (result: unknown) => ((result as { content: Array<{ type: string;
 
 before(async () => {
   const port = await new Promise<number>((resolve) => {
-    server = serve({ fetch: createApp(service, { apiKey: "k1" }).fetch, hostname: "127.0.0.1", port: 0 }, (info) => resolve(info.port));
+    server = serve({ fetch: createApp(service, { apiKeys: [{ name: "default", key: "k1" }] }).fetch, hostname: "127.0.0.1", port: 0 }, (info) => resolve(info.port));
   });
   const root = resolve(import.meta.dirname, "../../..");
   const transport = new StdioClientTransport({

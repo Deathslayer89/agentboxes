@@ -1,19 +1,24 @@
 import { timingSafeEqual } from "node:crypto";
 import type { MiddlewareHandler } from "hono";
 import { UnauthorizedError } from "../errors.js";
+import type { ApiKey } from "../models/apiKey.js";
 
 /**
- * One shared API key, sent as `Authorization: Bearer <key>`.
- * The comparison is constant-time so response timing does not reveal how many leading characters matched.
+ * Bearer auth against the configured keys; the matching key's name becomes the request's owner.
+ * Every key is compared in constant time so response timing reveals neither which key nor how much of it matched.
  */
-export function bearerAuth(apiKey: string): MiddlewareHandler {
-  const expected = Buffer.from(apiKey);
+export function bearerAuth(keys: ApiKey[]): MiddlewareHandler<{ Variables: { owner: string } }> {
+  const expected = keys.map((k) => ({ name: k.name, bytes: Buffer.from(k.key) }));
   return async (c, next) => {
     const header = c.req.header("authorization") ?? "";
     const [scheme, token] = header.split(" ", 2);
     const given = Buffer.from(token ?? "");
-    const ok = scheme?.toLowerCase() === "bearer" && given.length === expected.length && timingSafeEqual(given, expected);
-    if (!ok) throw new UnauthorizedError("missing or wrong API key");
+    let owner: string | undefined;
+    for (const { name, bytes } of expected) {
+      if (given.length === bytes.length && timingSafeEqual(given, bytes)) owner = name;
+    }
+    if (scheme?.toLowerCase() !== "bearer" || owner === undefined) throw new UnauthorizedError("missing or wrong API key");
+    c.set("owner", owner);
     await next();
   };
 }

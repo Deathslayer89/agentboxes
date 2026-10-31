@@ -1,5 +1,7 @@
 import { serve } from "@hono/node-server";
 import Docker from "dockerode";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { SystemClock } from "./clock.js";
 import { loadConfig } from "./config.js";
 import { RuntimeUnavailableError } from "./errors.js";
@@ -71,11 +73,17 @@ const reaper = setInterval(() => {
     .catch((err) => console.error("reaper:", err));
 }, config.reaperIntervalMs);
 
-if (config.apiKey === undefined) {
-  console.log("agentbox: AGENTBOX_API_KEY is not set, so auth is off; set it and HOST=0.0.0.0 to serve other machines");
+if (config.apiKeys.length === 0) {
+  console.log("agentbox: no API key is set, so auth is off; set AGENTBOX_API_KEY and HOST=0.0.0.0 to serve other machines");
+} else {
+  console.log(`agentbox: ${config.apiKeys.length} API key(s): ${config.apiKeys.map((k) => k.name).join(", ")}`);
 }
-const appOptions = config.apiKey === undefined ? {} : { apiKey: config.apiKey };
-const server = serve({ fetch: createApp(service, appOptions).fetch, hostname: config.host, port: config.port }, (info) => {
+// The pid next to the database, so `npm stop` can find the server behind the npm wrapper.
+const pidFile = join(dirname(config.dbPath), "agentbox.pid");
+mkdirSync(dirname(pidFile), { recursive: true });
+writeFileSync(pidFile, `${process.pid}\n`);
+
+const server = serve({ fetch: createApp(service, { apiKeys: config.apiKeys }).fetch, hostname: config.host, port: config.port }, (info) => {
   console.log(`agentbox listening on http://${info.address}:${info.port} (image ${config.image}, runtime ${runtime.runtimeName})`);
 });
 
@@ -87,6 +95,7 @@ async function shutdown(signal: string): Promise<void> {
   await pools.drain();
   await runtime.shutdown();
   store.close();
+  rmSync(pidFile, { force: true });
   process.exit(0);
 }
 process.once("SIGINT", () => void shutdown("SIGINT"));

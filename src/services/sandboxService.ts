@@ -3,6 +3,7 @@ import type { Config } from "../config.js";
 import { ConflictError, LimitExceededError, NotFoundError, ValidationError } from "../errors.js";
 import type { IdGenerator } from "../id.js";
 import { isGone, type CreateSandboxRequest, type ExecRequest, type ExecResult, type Sandbox, type SandboxLimits, type SandboxNetwork } from "../models/sandbox.js";
+import { LOCAL_OWNER } from "../models/apiKey.js";
 import { DEFAULT_TEMPLATE, type Template } from "../models/template.js";
 import type { SandboxRepository } from "../repositories/sandboxRepository.js";
 import type { TemplateRepository } from "../repositories/templateRepository.js";
@@ -30,17 +31,19 @@ export class SandboxService {
     private readonly pools: WarmPools,
   ) {}
 
-  async create(request: CreateSandboxRequest = {}): Promise<Sandbox> {
+  async create(request: CreateSandboxRequest = {}, owner = LOCAL_OWNER): Promise<Sandbox> {
     const limits = this.applyLimits(request);
     if (this.liveCount() >= this.config.maxSandboxes) {
       throw new LimitExceededError(`server limit of ${this.config.maxSandboxes} live sandboxes reached`);
     }
+    this.checkOwnerLimits(owner, limits);
     const template = request.template ?? DEFAULT_TEMPLATE;
     const egress = this.egressFor(request);
     const startedAt = performance.now();
     const now = this.clock.now();
     const sandbox: Sandbox = {
       id: this.ids.next(),
+      owner,
       status: "starting",
       template,
       limits,
@@ -124,15 +127,16 @@ export class SandboxService {
     return found.image;
   }
 
-  get(id: string): Sandbox {
+  // With an owner, a sandbox that belongs to someone else is reported as not found, not as forbidden.
+  get(id: string, owner?: string): Sandbox {
     const sandbox = this.sandboxes.findById(id);
-    if (sandbox === undefined) throw new NotFoundError(`sandbox ${id} not found`);
+    if (sandbox === undefined || (owner !== undefined && sandbox.owner !== owner)) throw new NotFoundError(`sandbox ${id} not found`);
     return sandbox;
   }
 
   // Live sandboxes by default; `all` includes the expired and destroyed ones still within retention.
-  list(all = false): Sandbox[] {
-    return this.sandboxes.findAll().filter((s) => all || !isGone(s));
+  list(all = false, owner?: string): Sandbox[] {
+    return this.sandboxes.findAll().filter((s) => (all || !isGone(s)) && (owner === undefined || s.owner === owner));
   }
 
   // With onOutput, chunks are delivered as they arrive; the result still holds the full output.
@@ -313,5 +317,19 @@ export class SandboxService {
 
   private liveCount(): number {
     return this.sandboxes.findAll().filter((s) => !isGone(s)).length;
+  }
+
+  // The per-key caps from AGENTBOX_API_KEYS: live sandboxes, and their memoryMb added up.
+  private checkOwnerLimits(owner: string, limits: SandboxLimits): void {
+    const key = this.config.apiKeys.find((k) => k.name === owner);
+    if (key === undefined) return;
+    const mine = this.sandboxes.findAll().filter((s) => s.owner === owner && !isGone(s));
+    if (key.maxSandboxes !== undefined && mine.length >= key.maxSandboxes) {
+      throw new LimitExceededError(`key "${owner}" is at its limit of ${key.maxSandboxes} live sandboxes`);
+    }
+    const memory = mine.reduce((sum, s) => sum + s.limits.memoryMb, 0) + limits.memoryMb;
+    if (key.maxMemoryMb !== undefined && memory > key.maxMemoryMb) {
+      throw new LimitExceededError(`key "${owner}" would exceed its ${key.maxMemoryMb} MB memory limit`);
+    }
   }
 }

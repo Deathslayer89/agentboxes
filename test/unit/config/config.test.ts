@@ -29,3 +29,16 @@ test("AGENTBOX_RUNTIME accepts runsc variants only, and defaults to auto", () =>
   assert.equal(loadConfig({ AGENTBOX_RUNTIME: "runsc-kvm" }).runtime, "runsc-kvm");
   assert.throws(() => loadConfig({ AGENTBOX_RUNTIME: "runc" }), /runsc/);
 });
+
+test("API keys: the single key is named default; the list adds named keys with optional limits", () => {
+  assert.deepEqual(loadConfig({}).apiKeys, []);
+  assert.deepEqual(loadConfig({ AGENTBOX_API_KEY: "abc" }).apiKeys, [{ name: "default", key: "abc" }]);
+  assert.deepEqual(loadConfig({ AGENTBOX_API_KEY: "abc", AGENTBOX_API_KEYS: "team-a:k1:2:1024, bot:k2" }).apiKeys, [
+    { name: "default", key: "abc" },
+    { name: "team-a", key: "k1", maxSandboxes: 2, maxMemoryMb: 1024 },
+    { name: "bot", key: "k2" },
+  ]);
+  for (const bad of ["nokey", "Bad Name:k", "a:k:x", "a:k:0", "a:k1,a:k2"]) {
+    assert.throws(() => loadConfig({ AGENTBOX_API_KEYS: bad }), bad);
+  }
+});

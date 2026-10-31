@@ -27,6 +27,8 @@ export interface SandboxNetwork {
 
 export interface Sandbox {
   id: string;
+  // Name of the API key that created it; "local" when auth is off.
+  owner: string;
   status: SandboxStatus;
   template: string;
   limits: SandboxLimits;

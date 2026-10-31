@@ -6,3 +6,5 @@ sdk/dist/
 data/
 LATER.md
 THREAT_MODEL.md
+__pycache__/
+*.egg-info/

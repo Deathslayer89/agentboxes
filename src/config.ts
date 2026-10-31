@@ -1,3 +1,4 @@
+import type { ApiKey } from "./models/apiKey.js";
 import type { SandboxLimits } from "./models/sandbox.js";
 import { DEFAULT_TEMPLATE, isValidTemplateName } from "./models/template.js";
 
@@ -5,8 +6,8 @@ export interface Config {
   port: number;
   // Interface to listen on. Loopback unless HOST says otherwise; anything else needs an API key.
   host: string;
-  // Shared bearer token. Undefined means auth is off, which is only allowed on loopback.
-  apiKey: string | undefined;
+  // Bearer tokens and their per-key limits. Empty means auth is off, which is only allowed on loopback.
+  apiKeys: ApiKey[];
   // Image every sandbox starts from. Templates build FROM this.
   image: string;
   // Docker runtime name: "auto" picks runsc-kvm when it is registered and runsc otherwise. Never runc.
@@ -43,15 +44,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     return value;
   };
 
-  const apiKey = env.AGENTBOX_API_KEY || undefined;
+  const apiKeys = parseApiKeys(env.AGENTBOX_API_KEY, env.AGENTBOX_API_KEYS);
   const host = env.HOST || "127.0.0.1";
-  if (apiKey === undefined && !["127.0.0.1", "localhost", "::1"].includes(host)) {
+  if (apiKeys.length === 0 && !["127.0.0.1", "localhost", "::1"].includes(host)) {
     throw new Error(`HOST=${host} would expose the server without an API key; set AGENTBOX_API_KEY first`);
   }
   const config: Config = {
     port: num("PORT", 7788),
     host,
-    apiKey,
+    apiKeys,
     image: env.AGENTBOX_IMAGE ?? "python:3.12-slim",
     runtime: env.AGENTBOX_RUNTIME || "auto",
     defaults: {
@@ -93,6 +94,36 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error("DEFAULT_EXEC_TIMEOUT_MS is above MAX_EXEC_TIMEOUT_MS");
   }
   return config;
+}
+
+/**
+ * AGENTBOX_API_KEY is the key named "default". AGENTBOX_API_KEYS adds more as
+ * "name:key[:maxSandboxes[:maxMemoryMb]]" entries separated by commas.
+ */
+export function parseApiKeys(single: string | undefined, list: string | undefined): ApiKey[] {
+  const keys: ApiKey[] = [];
+  if (single) keys.push({ name: "default", key: single });
+  for (const entry of (list ?? "").split(",").map((e) => e.trim()).filter(Boolean)) {
+    const [name = "", key = "", sandboxes, memory] = entry.split(":");
+    const limit = (raw: string | undefined, what: string): number | undefined => {
+      if (raw === undefined || raw === "") return undefined;
+      const value = Number(raw);
+      if (!Number.isInteger(value) || value <= 0) throw new Error(`AGENTBOX_API_KEYS entry "${name}": ${what} must be a positive integer`);
+      return value;
+    };
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name) || key === "") {
+      throw new Error(`AGENTBOX_API_KEYS entry "${entry}" must look like name:key[:maxSandboxes[:maxMemoryMb]]`);
+    }
+    const apiKey: ApiKey = { name, key };
+    const maxSandboxes = limit(sandboxes, "maxSandboxes");
+    const maxMemoryMb = limit(memory, "maxMemoryMb");
+    if (maxSandboxes !== undefined) apiKey.maxSandboxes = maxSandboxes;
+    if (maxMemoryMb !== undefined) apiKey.maxMemoryMb = maxMemoryMb;
+    keys.push(apiKey);
+  }
+  const names = keys.map((k) => k.name);
+  if (new Set(names).size !== names.length) throw new Error("API key names must be unique");
+  return keys;
 }
 
 // "default:3,data-science:2" -> { default: 3, "data-science": 2 }. Unset means { default: 3 }.

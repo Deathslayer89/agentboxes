@@ -58,7 +58,7 @@ test("without an API key every route is open", async () => {
 });
 
 test("with an API key, /sandboxes needs the exact bearer token and /health stays open", async () => {
-  const { app } = makeApp({ apiKey: "s3cret" });
+  const { app } = makeApp({ apiKeys: [{ name: "default", key: "s3cret" }] });
   assert.equal((await app.request("/health")).status, 200);
   assert.equal((await app.request("/sandboxes")).status, 401);
   assert.equal((await app.request("/sandboxes", { headers: { authorization: "Bearer wrong" } })).status, 401);
@@ -129,7 +129,7 @@ test("GET /stats reports live sandboxes and the pool", async () => {
   await app.request("/sandboxes", { method: "POST", body: "{}" });
   assert.deepEqual(await (await app.request("/stats")).json(), { sandboxes: { live: 1, max: 20 }, pools: {} });
   assert.deepEqual(await (await app.request("/templates")).json(), [{ name: "default", image: "python:3.12-slim" }]);
-  const { app: locked } = makeApp({ apiKey: "k" });
+  const { app: locked } = makeApp({ apiKeys: [{ name: "default", key: "k" }] });
   assert.equal((await locked.request("/stats")).status, 401);
   assert.equal((await locked.request("/templates")).status, 401);
 });
@@ -176,6 +176,26 @@ test("GET /metrics counts what the service did", async () => {
   assert.match(text, /agentbox_exec_duration_seconds_count 1\n/);
   assert.match(text, /agentbox_removals_total\{reason="destroyed"\} 1\n/);
   assert.match(text, /agentbox_sandboxes_live 0\n/);
-  const { app: locked } = makeApp({ apiKey: "k" });
+  const { app: locked } = makeApp({ apiKeys: [{ name: "default", key: "k" }] });
   assert.equal((await locked.request("/metrics")).status, 401);
+});
+
+test("each key sees only its own sandboxes and is held to its own limits", async () => {
+  const { app } = makeApp({ apiKeys: [{ name: "a", key: "ka", maxSandboxes: 1 }, { name: "b", key: "kb", maxMemoryMb: 600 }] }, { AGENTBOX_API_KEYS: "a:ka:1,b:kb::600" });
+  const asA = { authorization: "Bearer ka" };
+  const asB = { authorization: "Bearer kb" };
+  const created = await app.request("/sandboxes", { method: "POST", body: "{}", headers: asA });
+  assert.equal(created.status, 201);
+  const { id } = (await created.json()) as { id: string };
+  assert.equal((await app.request("/sandboxes", { method: "POST", body: "{}", headers: asA })).status, 429, "key a is capped at one sandbox");
+
+  assert.equal((await app.request(`/sandboxes/${id}`, { headers: asA })).status, 200);
+  assert.equal((await app.request(`/sandboxes/${id}`, { headers: asB })).status, 404, "another key's sandbox looks like it does not exist");
+  assert.equal((await app.request(`/sandboxes/${id}`, { method: "DELETE", headers: asB })).status, 404);
+  assert.equal(((await (await app.request("/sandboxes", { headers: asB })).json()) as unknown[]).length, 0);
+
+  assert.equal((await app.request("/sandboxes", { method: "POST", body: JSON.stringify({ memoryMb: 512 }), headers: asB })).status, 201);
+  const over = await app.request("/sandboxes", { method: "POST", body: JSON.stringify({ memoryMb: 256 }), headers: asB });
+  assert.equal(over.status, 429, "key b would exceed 600 MB in total");
+  assert.match(((await over.json()) as { message: string }).message, /memory limit/);
 });

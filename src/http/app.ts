@@ -3,6 +3,7 @@ import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ConflictError, DomainError, LimitExceededError, NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
+import { LOCAL_OWNER, type ApiKey } from "../models/apiKey.js";
 import type { Sandbox } from "../models/sandbox.js";
 import type { SandboxService } from "../services/sandboxService.js";
 import { bearerAuth } from "./auth.js";
@@ -36,12 +37,17 @@ async function jsonBody(c: Context): Promise<unknown> {
 }
 
 export interface AppOptions {
-  // When set, every route except /health needs `Authorization: Bearer <apiKey>`.
-  apiKey?: string;
+  // When non-empty, every route except /health needs `Authorization: Bearer <key>` for one of these.
+  apiKeys?: ApiKey[];
 }
 
-export function createApp(service: SandboxService, options: AppOptions = {}): Hono {
-  const app = new Hono();
+export function createApp(service: SandboxService, options: AppOptions = {}): Hono<{ Variables: { owner: string } }> {
+  const app = new Hono<{ Variables: { owner: string } }>();
+  const keys = options.apiKeys ?? [];
+  // Who is asking: the key's name, or "local" when auth is off.
+  const ownerOf = (c: Context<{ Variables: { owner: string } }>) => c.get("owner") ?? LOCAL_OWNER;
+  // The sandbox id from the path, after checking it belongs to the caller.
+  const own = (c: Context<{ Variables: { owner: string } }>) => service.get(c.req.param("id") ?? "", ownerOf(c)).id;
 
   app.onError((err, c) => {
     if (err instanceof DomainError) return c.json({ error: err.name, message: err.message }, statusFor(err));
@@ -52,11 +58,12 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
   // Open so load balancers and uptime checks can probe without the key.
   app.get("/health", (c) => c.json({ ok: true }));
 
-  if (options.apiKey !== undefined) {
-    app.use("/sandboxes/*", bearerAuth(options.apiKey));
-    app.use("/stats", bearerAuth(options.apiKey));
-    app.use("/metrics", bearerAuth(options.apiKey));
-    app.use("/templates", bearerAuth(options.apiKey));
+  if (keys.length > 0) {
+    const auth = bearerAuth(keys);
+    app.use("/sandboxes/*", auth);
+    app.use("/stats", auth);
+    app.use("/metrics", auth);
+    app.use("/templates", auth);
   }
 
   app.get("/stats", (c) => c.json(service.stats()));
@@ -66,17 +73,17 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
   app.get("/templates", async (c) => c.json(await service.listTemplates()));
 
   app.post("/sandboxes", async (c) => {
-    const sandbox = await service.create(parseCreateRequest(await jsonBody(c)));
+    const sandbox = await service.create(parseCreateRequest(await jsonBody(c)), ownerOf(c));
     return c.json(view(sandbox), 201);
   });
 
-  app.get("/sandboxes", (c) => c.json(service.list(c.req.query("all") === "true").map(view)));
+  app.get("/sandboxes", (c) => c.json(service.list(c.req.query("all") === "true", ownerOf(c)).map(view)));
 
-  app.get("/sandboxes/:id", (c) => c.json(view(service.get(c.req.param("id")))));
+  app.get("/sandboxes/:id", (c) => c.json(view(service.get(own(c)))));
 
   // A client that goes away takes its command with it.
   app.post("/sandboxes/:id/exec", async (c) => {
-    const result = await service.exec(c.req.param("id"), parseExecRequest(await jsonBody(c)), undefined, c.req.raw.signal);
+    const result = await service.exec(own(c), parseExecRequest(await jsonBody(c)), undefined, c.req.raw.signal);
     return c.json(result);
   });
 
@@ -88,9 +95,8 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
    * Each chunk is a JSON string so embedded newlines survive the SSE framing.
    */
   app.post("/sandboxes/:id/exec/stream", async (c) => {
-    const id = c.req.param("id");
+    const id = own(c); // an unknown or foreign id is a plain 404 before any stream starts
     const request = parseExecRequest(await jsonBody(c));
-    service.get(id); // unknown id is a plain 404 before any stream starts
     return streamSSE(c, async (stream) => {
       // One decoder per stream so a multibyte character split across chunks is not garbled.
       const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
@@ -113,33 +119,33 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
     });
   });
 
-  app.post("/sandboxes/:id/extend", async (c) => c.json(view(service.extend(c.req.param("id"), parseExtendRequest(await jsonBody(c))))));
+  app.post("/sandboxes/:id/extend", async (c) => c.json(view(service.extend(own(c), parseExtendRequest(await jsonBody(c))))));
 
   // Whole trees as tar archives, so a repository goes in or out in one request.
   app.put("/sandboxes/:id/archive", async (c) => {
     const tar = Buffer.from(await c.req.arrayBuffer());
-    const path = await service.putArchive(c.req.param("id"), c.req.query("path") ?? "/workspace", tar);
+    const path = await service.putArchive(own(c), c.req.query("path") ?? "/workspace", tar);
     return c.json({ path, bytes: tar.length });
   });
 
   app.get("/sandboxes/:id/archive", async (c) => {
-    const tar = await service.getArchive(c.req.param("id"), c.req.query("path") ?? "/workspace");
+    const tar = await service.getArchive(own(c), c.req.query("path") ?? "/workspace");
     return c.body(new Uint8Array(tar), 200, { "content-type": "application/x-tar" });
   });
 
-  app.get("/sandboxes/:id/egress-log", async (c) => c.json(await service.egressLog(c.req.param("id"))));
+  app.get("/sandboxes/:id/egress-log", async (c) => c.json(await service.egressLog(own(c))));
 
-  app.delete("/sandboxes/:id", async (c) => c.json(view(await service.destroy(c.req.param("id")))));
+  app.delete("/sandboxes/:id", async (c) => c.json(view(await service.destroy(own(c)))));
 
   // Raw bytes in and out; the path travels in the query string so the body stays unencoded.
   app.put("/sandboxes/:id/files", async (c) => {
     const data = Buffer.from(await c.req.arrayBuffer());
-    const path = await service.writeFile(c.req.param("id"), c.req.query("path"), data);
+    const path = await service.writeFile(own(c), c.req.query("path"), data);
     return c.json({ path, bytes: data.length });
   });
 
   app.get("/sandboxes/:id/files", async (c) => {
-    const data = await service.readFile(c.req.param("id"), c.req.query("path"));
+    const data = await service.readFile(own(c), c.req.query("path"));
     // Hono wants a plain Uint8Array; a Node Buffer does not satisfy its type.
     return c.body(new Uint8Array(data), 200, { "content-type": "application/octet-stream" });
   });

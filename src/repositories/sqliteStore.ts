@@ -97,6 +97,7 @@ function deserialize(data: string): Sandbox {
   const raw = JSON.parse(data) as Omit<Sandbox, "createdAt" | "expiresAt"> & { createdAt: string; expiresAt: string };
   return {
     ...raw,
+    owner: raw.owner ?? "local",
     createdAt: new Date(raw.createdAt),
     expiresAt: new Date(raw.expiresAt),
     activeExecs: 0,

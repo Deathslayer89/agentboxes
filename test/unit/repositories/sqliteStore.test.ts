@@ -9,6 +9,7 @@ import { SqliteStore } from "../../../src/repositories/sqliteStore.js";
 function record(id: string, status: Sandbox["status"] = "ready"): Sandbox {
   return {
     id,
+    owner: "local",
     status,
     template: "default",
     limits: { memoryMb: 512, cpus: 1, diskMb: 1024, pids: 256, ttlSeconds: 600 },
