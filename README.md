@@ -231,11 +231,11 @@ Machine: 12th Gen Intel Core i7-12700H, 20 threads, 15 GB RAM, Linux 7.0.0, Dock
 
 | Measurement (HTTP round trip) | n | p50 ms | p95 ms | p99 ms |
 |---|---|---|---|---|
-| create from warm pool | 20 | 2.3 | 4.9 | 12.4 |
-| create cold (no pool) | 10 | 209.5 | 240.3 | 240.3 |
-| exec `print(2+2)` | 30 | 84.3 | 101.0 | 109.7 |
+| create from warm pool | 30 | 1.1 | 2.2 | 4.3 |
+| create cold (no pool) | 10 | 129.9 | 154.2 | 154.2 |
+| exec `print(2+2)` | 30 | 30.8 | 36.3 | 38.0 |
 
-An idle sandbox holds about 16 MB of host memory with gVisor's sentry included, so about 62 idle sandboxes fit in 1 GB of RAM. A sandbox with a network allowlist starts cold in about 300 ms, since it also gets its own Docker network and the proxy joins it; with secrets, installing the CA adds another 300 ms.
+Five creates fired at the same time against a pool of five took 57 to 73 ms each, and a sixth create during the refill started cold at 141 ms. An idle sandbox holds about 16 MB of host memory with gVisor's sentry included, so about 63 idle sandboxes fit in 1 GB of RAM. A sandbox with a network allowlist starts cold in about 300 ms, since it also gets its own Docker network and the proxy joins it; with secrets, installing the CA adds another 300 ms.
 
 The roadmap's kill criterion is gVisor being about 3x slower than runc on common tasks. Measured here: Python startup 14 ms under gVisor against 11 ms under runc, `pip install requests` 2.0 s against 1.9 s, and `npm install express` (65 packages, node template) 1.8 s against 1.3 s. Syscall-heavy microbenchmarks (thousands of tiny files, process spawn loops) do show 3 to 4x, so the KVM platform above is worth registering on a host that has it.
 
