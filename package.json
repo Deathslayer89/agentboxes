@@ -8,6 +8,7 @@
     "start": "tsx src/main.ts",
     "dev": "tsx watch src/main.ts",
     "typecheck": "tsc",
+    "agentbox": "tsx src/cli.ts",
     "test": "tsx --test src/*.test.ts",
     "test:integration": "tsx --test test/*.test.ts"
   },

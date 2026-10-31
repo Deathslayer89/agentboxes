@@ -5,7 +5,7 @@ import type { OutputListener, SandboxRuntime } from "./sandboxRuntime.js";
 // In-memory stand-in for tests: no Docker, no gVisor. Records what the service asked for.
 export class FakeRuntime implements SandboxRuntime {
   // handle -> what was started
-  readonly containers = new Map<string, { sandboxId: string; limits: SandboxLimits; files: Map<string, Buffer> }>();
+  readonly containers = new Map<string, { sandboxId: string; limits: SandboxLimits; image: string; files: Map<string, Buffer> }>();
   readonly execCalls: Array<{ handle: string; cmd: string[]; timeoutMs: number }> = [];
   // When set, the next start() throws this instead of starting a container.
   startError: Error | undefined;
@@ -13,7 +13,7 @@ export class FakeRuntime implements SandboxRuntime {
 
   async init(): Promise<void> {}
 
-  async start(sandboxId: string, limits: SandboxLimits): Promise<string> {
+  async start(sandboxId: string, limits: SandboxLimits, image: string): Promise<string> {
     if (this.startError !== undefined) {
       const error = this.startError;
       this.startError = undefined;
@@ -21,7 +21,7 @@ export class FakeRuntime implements SandboxRuntime {
     }
     this.counter += 1;
     const handle = `ctr-${this.counter}`;
-    this.containers.set(handle, { sandboxId, limits, files: new Map() });
+    this.containers.set(handle, { sandboxId, limits, image, files: new Map() });
     return handle;
   }
 

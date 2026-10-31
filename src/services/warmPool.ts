@@ -10,9 +10,9 @@ export interface PoolStats {
 }
 
 /**
- * Keeps `size` default-sized containers started ahead of time so create() can hand one
- * out without waiting for Docker. Each container is used once: claimed, then destroyed
- * together with its sandbox.
+ * Keeps `size` default-sized containers of one image started ahead of time so create()
+ * can hand one out without waiting for Docker. Each container is used once: claimed,
+ * then destroyed together with its sandbox.
  */
 export class WarmPool {
   private readonly ready: Array<{ slotId: string; handle: string }> = [];
@@ -28,6 +28,8 @@ export class WarmPool {
     private readonly runtime: SandboxRuntime,
     private readonly limits: SandboxLimits,
     readonly size: number,
+    private readonly image: string,
+    private readonly template: string,
   ) {}
 
   holds(slotId: string): boolean {
@@ -58,14 +60,14 @@ export class WarmPool {
   private async fillLoop(): Promise<void> {
     while (!this.closed && this.slots.size < this.size) {
       this.counter += 1;
-      const slotId = `pool_${this.counter}`;
+      const slotId = `pool_${this.template}_${this.counter}`;
       this.slots.add(slotId);
       let handle: string;
       try {
-        handle = await this.runtime.start(slotId, this.limits);
+        handle = await this.runtime.start(slotId, this.limits, this.image);
       } catch (e) {
         this.slots.delete(slotId);
-        console.error(`warm pool: could not start a container: ${e instanceof Error ? e.message : String(e)}`);
+        console.error(`warm pool ${this.template}: could not start a container: ${e instanceof Error ? e.message : String(e)}`);
         return; // the next claim or reaper pass tries again
       }
       if (this.closed) {
@@ -93,5 +95,36 @@ export class WarmPool {
       hits: this.hits,
       misses: this.misses,
     };
+  }
+}
+
+// One warm pool per template name.
+export class WarmPools {
+  private readonly pools = new Map<string, WarmPool>();
+
+  add(template: string, pool: WarmPool): void {
+    this.pools.set(template, pool);
+  }
+
+  // Undefined when there is no pool for the template or it is empty right now.
+  claim(template: string): string | undefined {
+    return this.pools.get(template)?.claim();
+  }
+
+  holds(slotId: string): boolean {
+    for (const pool of this.pools.values()) if (pool.holds(slotId)) return true;
+    return false;
+  }
+
+  async fill(): Promise<void> {
+    await Promise.all([...this.pools.values()].map((pool) => pool.fill()));
+  }
+
+  async drain(): Promise<void> {
+    await Promise.all([...this.pools.values()].map((pool) => pool.drain()));
+  }
+
+  stats(): Record<string, PoolStats> {
+    return Object.fromEntries([...this.pools].map(([template, pool]) => [template, pool.stats()]));
   }
 }

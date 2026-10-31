@@ -14,8 +14,8 @@ export interface SandboxRuntime {
    */
   init(): Promise<void>;
 
-  // Start an isolated container for a sandbox. Returns an opaque handle (the container id).
-  start(sandboxId: string, limits: SandboxLimits): Promise<string>;
+  // Start an isolated container from `image` for a sandbox. Returns an opaque handle (the container id).
+  start(sandboxId: string, limits: SandboxLimits, image: string): Promise<string>;
 
   /**
    * Run one command inside the sandbox and wait for it. Must kill it at timeoutMs.

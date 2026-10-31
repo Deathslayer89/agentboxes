@@ -3,9 +3,11 @@ import type { Config } from "../config.js";
 import { ConflictError, LimitExceededError, NotFoundError, ValidationError } from "../errors.js";
 import type { IdGenerator } from "../id.js";
 import { isGone, type CreateSandboxRequest, type ExecRequest, type ExecResult, type Sandbox, type SandboxLimits } from "../models/sandbox.js";
+import { DEFAULT_TEMPLATE, type Template } from "../models/template.js";
 import type { SandboxRepository } from "../repositories/sandboxRepository.js";
+import type { TemplateRepository } from "../repositories/templateRepository.js";
 import type { OutputListener, SandboxRuntime } from "../runtime/sandboxRuntime.js";
-import type { WarmPool } from "./warmPool.js";
+import type { PoolStats, WarmPools } from "./warmPool.js";
 import { resolveWorkspacePath } from "./workspacePath.js";
 
 /**
@@ -17,11 +19,12 @@ const GONE_RETENTION_MS = 10 * 60 * 1000;
 export class SandboxService {
   constructor(
     private readonly sandboxes: SandboxRepository,
+    private readonly templates: TemplateRepository,
     private readonly runtime: SandboxRuntime,
     private readonly config: Config,
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
-    private readonly pool: WarmPool,
+    private readonly pools: WarmPools,
   ) {}
 
   async create(request: CreateSandboxRequest = {}): Promise<Sandbox> {
@@ -29,11 +32,13 @@ export class SandboxService {
     if (this.liveCount() >= this.config.maxSandboxes) {
       throw new LimitExceededError(`server limit of ${this.config.maxSandboxes} live sandboxes reached`);
     }
+    const template = request.template ?? DEFAULT_TEMPLATE;
     const startedAt = performance.now();
     const now = this.clock.now();
     const sandbox: Sandbox = {
       id: this.ids.next(),
       status: "starting",
+      template,
       limits,
       startup: { source: "cold", ms: 0 },
       createdAt: now,
@@ -44,12 +49,12 @@ export class SandboxService {
     // Saved before the container exists so the reaper never mistakes it for an orphan.
     this.sandboxes.save(sandbox);
     try {
-      const pooled = this.poolable(limits) ? this.pool.claim() : undefined;
+      const pooled = this.poolable(limits) ? this.pools.claim(template) : undefined;
       if (pooled !== undefined) {
         sandbox.handle = pooled;
         sandbox.startup.source = "pool";
       } else {
-        sandbox.handle = await this.runtime.start(sandbox.id, limits);
+        sandbox.handle = await this.runtime.start(sandbox.id, limits, await this.imageFor(template));
       }
     } catch (e) {
       this.sandboxes.delete(sandbox.id);
@@ -68,8 +73,19 @@ export class SandboxService {
     return sandbox;
   }
 
-  stats(): { sandboxes: { live: number; max: number }; pool: ReturnType<WarmPool["stats"]> } {
-    return { sandboxes: { live: this.liveCount(), max: this.config.maxSandboxes }, pool: this.pool.stats() };
+  stats(): { sandboxes: { live: number; max: number }; pools: Record<string, PoolStats> } {
+    return { sandboxes: { live: this.liveCount(), max: this.config.maxSandboxes }, pools: this.pools.stats() };
+  }
+
+  // The default template is the base image; every other template is a labelled Docker image.
+  async listTemplates(): Promise<Template[]> {
+    return [{ name: DEFAULT_TEMPLATE, image: this.config.image }, ...(await this.templates.list())];
+  }
+
+  private async imageFor(template: string): Promise<string> {
+    const found = (await this.listTemplates()).find((t) => t.name === template);
+    if (found === undefined) throw new ValidationError(`unknown template "${template}"`);
+    return found.image;
   }
 
   get(id: string): Sandbox {
@@ -155,11 +171,11 @@ export class SandboxService {
       const known = this.sandboxes.findById(sandboxId);
       if (known !== undefined && !isGone(known)) continue; // started for a sandbox that is live or still starting
       if (liveHandles.has(handle)) continue; // claimed from the pool; its label still names the pool slot
-      if (this.pool.holds(sandboxId)) continue; // waiting in the pool, or starting for it
+      if (this.pools.holds(sandboxId)) continue; // waiting in a pool, or starting for one
       await this.runtime.destroy(handle);
       orphans.push(sandboxId || handle);
     }
-    await this.pool.fill();
+    await this.pools.fill();
     return { expired, orphans };
   }
 

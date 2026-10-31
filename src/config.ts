@@ -1,4 +1,5 @@
 import type { SandboxLimits } from "./models/sandbox.js";
+import { DEFAULT_TEMPLATE, isValidTemplateName } from "./models/template.js";
 
 export interface Config {
   port: number;
@@ -20,8 +21,8 @@ export interface Config {
   maxFileBytes: number;
   // Cap on live sandboxes across all callers. Containers waiting in the warm pool do not count.
   maxSandboxes: number;
-  // How many default-sized containers to keep started ahead of time. 0 turns the pool off.
-  poolSize: number;
+  // Warm pool size per template, for example { default: 3, "data-science": 2 }. 0 turns a pool off.
+  poolSizes: Record<string, number>;
   reaperIntervalMs: number;
 }
 
@@ -35,14 +36,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   };
 
   const apiKey = env.AGENTBOX_API_KEY || undefined;
-  const count = (name: string, fallback: number): number => {
-    const raw = env[name];
-    if (raw === undefined || raw === "") return fallback;
-    const value = Number(raw);
-    if (!Number.isInteger(value) || value < 0) throw new Error(`${name} must be a whole number of 0 or more, got "${raw}"`);
-    return value;
-  };
-
   const config: Config = {
     port: num("PORT", 7788),
     host: apiKey === undefined ? "127.0.0.1" : env.HOST || "0.0.0.0",
@@ -67,7 +60,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxOutputBytes: num("MAX_OUTPUT_BYTES", 1_048_576),
     maxFileBytes: num("MAX_FILE_BYTES", 8 * 1_048_576),
     maxSandboxes: num("MAX_SANDBOXES", 20),
-    poolSize: count("POOL_SIZE", 3),
+    poolSizes: parsePoolSizes(env.POOL_SIZES),
     reaperIntervalMs: num("REAPER_INTERVAL_MS", 10_000),
   };
 
@@ -81,4 +74,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error("DEFAULT_EXEC_TIMEOUT_MS is above MAX_EXEC_TIMEOUT_MS");
   }
   return config;
+}
+
+// "default:3,data-science:2" -> { default: 3, "data-science": 2 }. Unset means { default: 3 }.
+export function parsePoolSizes(raw: string | undefined): Record<string, number> {
+  if (raw === undefined || raw.trim() === "") return { [DEFAULT_TEMPLATE]: 3 };
+  const sizes: Record<string, number> = {};
+  for (const entry of raw.split(",")) {
+    const [name = "", count = ""] = entry.trim().split(":");
+    const size = Number(count);
+    if (!isValidTemplateName(name) || count === "" || !Number.isInteger(size) || size < 0) {
+      throw new Error(`POOL_SIZES entry "${entry.trim()}" must look like name:count, for example default:3`);
+    }
+    sizes[name] = size;
+  }
+  return sizes;
 }

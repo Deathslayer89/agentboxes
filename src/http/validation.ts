@@ -1,5 +1,6 @@
 import { ValidationError } from "../errors.js";
 import type { CreateSandboxRequest, ExecRequest } from "../models/sandbox.js";
+import { isValidTemplateName } from "../models/template.js";
 
 // Shape checks for untrusted JSON bodies. Policy checks (server maximums) live in SandboxService.
 
@@ -27,6 +28,12 @@ export function parseCreateRequest(body: unknown): CreateSandboxRequest {
   // cpus may be fractional (0.5 is a valid Docker cpu share).
   const cpus = optionalPositive(obj, "cpus", false);
   if (cpus !== undefined) req.cpus = cpus;
+  if (obj.template !== undefined) {
+    if (typeof obj.template !== "string" || !isValidTemplateName(obj.template)) {
+      throw new ValidationError("template must be lowercase letters, digits, dot, dash or underscore");
+    }
+    req.template = obj.template;
+  }
   return req;
 }
 

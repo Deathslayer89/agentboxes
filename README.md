@@ -2,7 +2,7 @@
 
 Self-hosted sandboxes for AI agents. Runs on any Linux box with Docker and gVisor; no KVM needed.
 
-Status: v0.1 in progress. Create, exec, streaming exec, files, warm pool, TTL reaper and the API key are here. Templates, the SDK and the egress proxy come next.
+Status: v0.1 in progress. Create, exec, streaming exec, files, warm pool, templates, TTL reaper and the API key are here. The SDK and the egress proxy come next.
 
 ## Requirements
 
@@ -35,7 +35,7 @@ AGENTBOX_API_KEY=$(openssl rand -hex 16) npm start
 ```
 
 ```bash
-# create a sandbox (all fields optional: memoryMb, cpus, diskMb, pids, ttlSeconds)
+# create a sandbox (all fields optional: template, memoryMb, cpus, diskMb, pids, ttlSeconds)
 curl -s -X POST localhost:7788/sandboxes -d '{}'
 # {"id":"sbx_...","status":"ready","limits":{...},"startup":{"source":"pool","ms":0.3},"createdAt":"...","expiresAt":"..."}
 
@@ -64,7 +64,27 @@ Sandboxes expire after `ttlSeconds` (default 600, max 3600). A reaper removes ex
 
 ## Warm pool
 
-The server keeps `POOL_SIZE` (default 3) default-sized containers started ahead of time. A create request whose memory, cpus, disk and pids match the defaults takes one of them; `startup.source` says `pool` and `startup.ms` is the server-side time to ready. Any other size starts a fresh container (`cold`), which takes Docker plus gVisor start time. Each pooled container is used once and destroyed with its sandbox; a background loop refills the pool. Pool containers do not count towards `MAX_SANDBOXES`. `GET /stats` shows pool size, ready, starting, hits and misses.
+The server keeps default-sized containers started ahead of time, one pool per template, sized by `POOL_SIZES` (default `default:3`). A create request whose memory, cpus, disk and pids match the defaults takes one from its template's pool; `startup.source` says `pool` and `startup.ms` is the server-side time to ready. Any other size, or a template without a pool, starts a fresh container (`cold`), which takes Docker plus gVisor start time. Each pooled container is used once and destroyed with its sandbox; a background loop refills the pool. Pool containers do not count towards `MAX_SANDBOXES`. `GET /stats` shows size, ready, starting, hits and misses per pool.
+
+## Templates
+
+A template is a Docker image with packages already installed, so a sandbox starts with them and never downloads at run time. Write a Dockerfile that starts `FROM python:3.12-slim` (the base image), install as root, and build it:
+
+```Dockerfile
+FROM python:3.12-slim
+RUN pip install --no-cache-dir pandas numpy requests
+```
+
+```bash
+npm run agentbox -- template build data-science ./Dockerfile   # tags agentbox/data-science and labels it
+npm run agentbox -- template list
+curl -s localhost:7788/templates
+curl -s -X POST localhost:7788/sandboxes -d '{"template":"data-science"}'
+```
+
+Sandboxes still run as user 65534 with a read-only root, so anything the Dockerfile installs must be world-readable, which `pip install` as root already is. To keep a template instant, give it a pool: `POOL_SIZES=default:3,data-science:2`. The server refuses to start if `POOL_SIZES` names a template that has not been built.
+
+Installing packages at run time (`pip install` inside a sandbox) fails today because the sandbox has no network. The Day 3 egress allowlist will allow it per sandbox for `pypi.org` and `files.pythonhosted.org`, as the slow path.
 
 ## What every sandbox gets
 
@@ -82,7 +102,7 @@ The server keeps `POOL_SIZE` (default 3) default-sized containers started ahead 
 | User | `nobody` (65534), `--cap-drop=ALL`, `no-new-privileges` | |
 | Host mounts, docker socket, host env | none | |
 
-Other settings: `PORT` (7788), `HOST`, `AGENTBOX_API_KEY`, `AGENTBOX_IMAGE` (`python:3.12-slim`), `MAX_SANDBOXES` (20), `MAX_OUTPUT_BYTES` per stream per exec (1 MiB, output past it is dropped and `truncated` is true), `MAX_FILE_BYTES` (8 MiB), `POOL_SIZE` (3), `REAPER_INTERVAL_MS` (10000).
+Other settings: `PORT` (7788), `HOST`, `AGENTBOX_API_KEY`, `AGENTBOX_IMAGE` (`python:3.12-slim`), `MAX_SANDBOXES` (20), `MAX_OUTPUT_BYTES` per stream per exec (1 MiB, output past it is dropped and `truncated` is true), `MAX_FILE_BYTES` (8 MiB), `POOL_SIZES` (`default:3`), `REAPER_INTERVAL_MS` (10000).
 
 ## Tests
 
@@ -94,9 +114,10 @@ npm run test:integration  # needs Docker + runsc; checks each isolation default 
 ## Layout
 
 ```
-src/models/        sandbox record and request/response types
-src/repositories/  where records live (in memory for v0.1)
+src/models/        sandbox and template records, request/response types
+src/repositories/  where records live: sandboxes in memory for v0.1, templates as labelled Docker images
 src/runtime/       SandboxRuntime interface and the gVisor-on-Docker implementation
-src/services/      SandboxService: create, exec, destroy, reap
-src/http/          routes and request parsing
+src/services/      SandboxService (create, exec, files, destroy, reap) and the warm pools
+src/http/          routes, auth and request parsing
+src/cli.ts         `agentbox template build | list`
 ```

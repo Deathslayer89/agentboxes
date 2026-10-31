@@ -22,6 +22,7 @@ export interface Startup {
 export interface Sandbox {
   id: string;
   status: SandboxStatus;
+  template: string;
   limits: SandboxLimits;
   startup: Startup;
   createdAt: Date;
@@ -35,7 +36,7 @@ export interface Sandbox {
   activeExecs: number;
 }
 
-export type CreateSandboxRequest = Partial<SandboxLimits>;
+export type CreateSandboxRequest = Partial<SandboxLimits> & { template?: string };
 
 export interface ExecRequest {
   cmd: string[];

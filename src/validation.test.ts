@@ -17,6 +17,13 @@ test("create request: rejects non-objects, non-numbers, zero, negatives and frac
   assert.throws(() => parseCreateRequest({ pids: 1.5 }), ValidationError);
 });
 
+test("create request: template must be a well-formed name", () => {
+  assert.deepEqual(parseCreateRequest({ template: "data-science" }), { template: "data-science" });
+  assert.throws(() => parseCreateRequest({ template: "Data Science" }), ValidationError);
+  assert.throws(() => parseCreateRequest({ template: "../x" }), ValidationError);
+  assert.throws(() => parseCreateRequest({ template: 1 }), ValidationError);
+});
+
 test("exec request: cmd must be a non-empty string array, timeoutMs optional", () => {
   assert.deepEqual(parseExecRequest({ cmd: ["python", "-c", "print(1)"] }), { cmd: ["python", "-c", "print(1)"] });
   assert.deepEqual(parseExecRequest({ cmd: ["true"], timeoutMs: 500 }), { cmd: ["true"], timeoutMs: 500 });

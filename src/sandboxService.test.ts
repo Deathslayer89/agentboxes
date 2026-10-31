@@ -5,18 +5,24 @@ import { loadConfig } from "./config.js";
 import { ConflictError, LimitExceededError, NotFoundError, ValidationError } from "./errors.js";
 import { CounterIdGenerator } from "./id.js";
 import { InMemorySandboxRepository } from "./repositories/sandboxRepository.js";
+import { InMemoryTemplateRepository } from "./repositories/templateRepository.js";
 import { FakeRuntime } from "./runtime/fakeRuntime.js";
 import { SandboxService } from "./services/sandboxService.js";
-import { WarmPool } from "./services/warmPool.js";
+import { WarmPool, WarmPools } from "./services/warmPool.js";
 
-// Fresh service per test so tests never depend on each other. The pool is off unless a test asks for it.
+// Fresh service per test so tests never depend on each other. Pools are off unless a test sets POOL_SIZES.
 function makeService(env: NodeJS.ProcessEnv = {}) {
-  const config = loadConfig({ POOL_SIZE: "0", ...env });
+  const config = loadConfig({ POOL_SIZES: "default:0", ...env });
   const clock = new FakeClock(new Date("2026-01-01T00:00:00Z"));
   const runtime = new FakeRuntime();
-  const pool = new WarmPool(runtime, config.defaults, config.poolSize);
-  const service = new SandboxService(new InMemorySandboxRepository(), runtime, config, clock, new CounterIdGenerator("sbx_"), pool);
-  return { service, runtime, clock, config, pool };
+  const templates = new InMemoryTemplateRepository([{ name: "data-science", image: "agentbox/data-science:latest" }]);
+  const pools = new WarmPools();
+  for (const [template, size] of Object.entries(config.poolSizes)) {
+    const image = template === "default" ? config.image : `agentbox/${template}:latest`;
+    pools.add(template, new WarmPool(runtime, config.defaults, size, image, template));
+  }
+  const service = new SandboxService(new InMemorySandboxRepository(), templates, runtime, config, clock, new CounterIdGenerator("sbx_"), pools);
+  return { service, runtime, clock, config, pools };
 }
 
 test("create starts a container with the server defaults and a TTL", async () => {
@@ -72,7 +78,7 @@ test("destroy removes the container; exec afterwards is a conflict, get still wo
 test("the reaper expires sandboxes past their TTL and removes orphaned containers", async () => {
   const { service, runtime, clock } = makeService({ DEFAULT_TTL_SECONDS: "60" });
   const { id } = await service.create();
-  await runtime.start("sbx_from_previous_run", (await service.create()).limits); // the server never recorded this one
+  await runtime.start("sbx_from_previous_run", (await service.create()).limits, "x"); // the server never recorded this one
 
   clock.advance(30_000);
   let pass = await service.reap();
@@ -108,26 +114,45 @@ test("files are written and read back under /workspace; bad paths and big files 
 });
 
 test("create takes a container from the pool when the shape matches the defaults, otherwise starts cold", async () => {
-  const { service, runtime, pool } = makeService({ POOL_SIZE: "1" });
-  await pool.fill();
+  const { service, runtime, pools } = makeService({ POOL_SIZES: "default:1" });
+  await pools.fill();
   const pooled = await service.create({ ttlSeconds: 60 }); // a custom TTL does not change the container
   assert.equal(pooled.startup.source, "pool");
   assert.equal(pooled.handle, "ctr-1");
   const cold = await service.create({ memoryMb: 256 });
   assert.equal(cold.startup.source, "cold");
   assert.equal(runtime.containers.get(cold.handle ?? "")?.limits.memoryMb, 256);
-  await pool.fill();
-  assert.deepEqual(service.stats(), { sandboxes: { live: 2, max: 20 }, pool: { size: 1, ready: 1, starting: 0, hits: 1, misses: 0 } });
+  await pools.fill();
+  assert.deepEqual(service.stats(), { sandboxes: { live: 2, max: 20 }, pools: { default: { size: 1, ready: 1, starting: 0, hits: 1, misses: 0 } } });
 });
 
 test("the reaper leaves pool containers and claimed pool containers alone", async () => {
-  const { service, runtime, pool } = makeService({ POOL_SIZE: "1" });
-  await pool.fill();
+  const { service, runtime, pools } = makeService({ POOL_SIZES: "default:1" });
+  await pools.fill();
   const claimed = await service.create();
-  await runtime.start("sbx_orphan", claimed.limits);
+  await runtime.start("sbx_orphan", claimed.limits, "x");
   const { orphans } = await service.reap();
   assert.deepEqual(orphans, ["sbx_orphan"]);
   assert.equal(service.get(claimed.id).status, "ready");
-  assert.equal(pool.stats().ready, 1);
+  assert.equal(pools.stats().default?.ready, 1);
   assert.equal(runtime.containers.size, 2);
+});
+
+test("a template picks its image and its own pool; an unknown template is refused", async () => {
+  const { service, runtime, pools } = makeService({ POOL_SIZES: "default:0,data-science:1" });
+  await pools.fill();
+  const cold = await service.create();
+  assert.equal(runtime.containers.get(cold.handle ?? "")?.image, "python:3.12-slim");
+  const pooled = await service.create({ template: "data-science" });
+  assert.equal(pooled.template, "data-science");
+  assert.equal(pooled.startup.source, "pool");
+  assert.equal(runtime.containers.get(pooled.handle ?? "")?.image, "agentbox/data-science:latest");
+  const coldTemplate = await service.create({ template: "data-science", memoryMb: 256 });
+  assert.equal(coldTemplate.startup.source, "cold");
+  assert.equal(runtime.containers.get(coldTemplate.handle ?? "")?.image, "agentbox/data-science:latest");
+  await assert.rejects(service.create({ template: "nope" }), ValidationError);
+  assert.deepEqual(await service.listTemplates(), [
+    { name: "default", image: "python:3.12-slim" },
+    { name: "data-science", image: "agentbox/data-science:latest" },
+  ]);
 });

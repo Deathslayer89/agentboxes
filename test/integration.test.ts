@@ -3,6 +3,9 @@
  *   npm run test:integration
  */
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import os from "node:os";
 import test, { after, before } from "node:test";
 import Docker from "dockerode";
@@ -10,14 +13,16 @@ import { SystemClock } from "../src/clock.js";
 import { loadConfig } from "../src/config.js";
 import { RandomIdGenerator } from "../src/id.js";
 import { InMemorySandboxRepository } from "../src/repositories/sandboxRepository.js";
+import { DockerTemplateRepository } from "../src/repositories/templateRepository.js";
 import { GvisorDockerRuntime } from "../src/runtime/gvisorDockerRuntime.js";
 import { SandboxService } from "../src/services/sandboxService.js";
-import { WarmPool } from "../src/services/warmPool.js";
+import { WarmPool, WarmPools } from "../src/services/warmPool.js";
 
 const config = loadConfig({ ...process.env, DEFAULT_TTL_SECONDS: "120" });
-const runtime = new GvisorDockerRuntime(new Docker(), config.image, config.maxOutputBytes, config.maxFileBytes);
-const pool = new WarmPool(runtime, config.defaults, 0);
-const service = new SandboxService(new InMemorySandboxRepository(), runtime, config, new SystemClock(), new RandomIdGenerator("sbxtest_"), pool);
+const docker = new Docker();
+const runtime = new GvisorDockerRuntime(docker, config.image, config.maxOutputBytes, config.maxFileBytes);
+const templates = new DockerTemplateRepository(docker);
+const service = new SandboxService(new InMemorySandboxRepository(), templates, runtime, config, new SystemClock(), new RandomIdGenerator("sbxtest_"), new WarmPools());
 
 let id: string;
 
@@ -89,7 +94,7 @@ test("F3/F4: destroy, then exec is a conflict and the record says destroyed", as
 });
 
 test("F5: a container the server does not know about is removed by the reaper", async () => {
-  const orphan = await runtime.start("sbxtest_orphan", config.defaults);
+  const orphan = await runtime.start("sbxtest_orphan", config.defaults, config.image);
   const { orphans } = await service.reap();
   assert.ok(orphans.includes("sbxtest_orphan"));
   const still = (await runtime.listManaged()).some((c) => c.handle === orphan);
@@ -127,8 +132,10 @@ test("F6: output chunks arrive while the command is still running", async () => 
 });
 
 test("P1/P2: a sandbox from the warm pool is ready in well under 100 ms; a cold one takes longer", async () => {
-  const warm = new WarmPool(runtime, config.defaults, 2);
-  const pooled = new SandboxService(new InMemorySandboxRepository(), runtime, config, new SystemClock(), new RandomIdGenerator("sbxpool_"), warm);
+  const warm = new WarmPool(runtime, config.defaults, 2, config.image, "default");
+  const pools = new WarmPools();
+  pools.add("default", warm);
+  const pooled = new SandboxService(new InMemorySandboxRepository(), templates, runtime, config, new SystemClock(), new RandomIdGenerator("sbxpool_"), pools);
   await warm.fill();
   try {
     const a = await pooled.create();
@@ -146,5 +153,24 @@ test("P1/P2: a sandbox from the warm pool is ready in well under 100 ms; a cold 
     for (const s of pooled.list()) await pooled.destroy(s.id);
   } finally {
     await warm.drain();
+  }
+});
+
+test("F8/F9: a template built from a Dockerfile shows up in the list and its files are inside the sandbox", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentbox-tpl-"));
+  writeFileSync(join(dir, "Dockerfile"), `FROM ${config.image}\nRUN echo "hello from the template" > /opt/template.txt\n`);
+  const lines: string[] = [];
+  await templates.build("inttest", join(dir, "Dockerfile"), (line) => lines.push(line));
+  try {
+    assert.ok(lines.some((l) => l.includes("hello from the template")), lines.join("\n"));
+    assert.ok((await service.listTemplates()).some((t) => t.name === "inttest"));
+    const box = await service.create({ template: "inttest" });
+    assert.equal(box.template, "inttest");
+    assert.equal((await service.exec(box.id, { cmd: ["cat", "/opt/template.txt"] })).stdout.trim(), "hello from the template");
+    await service.destroy(box.id);
+    await assert.rejects(service.create({ template: "never-built" }), /unknown template/);
+  } finally {
+    await docker.getImage("agentbox/inttest:latest").remove({ force: true }).catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
   }
 });

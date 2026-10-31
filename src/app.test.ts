@@ -5,21 +5,23 @@ import { loadConfig } from "./config.js";
 import { createApp, type AppOptions } from "./http/app.js";
 import { CounterIdGenerator } from "./id.js";
 import { InMemorySandboxRepository } from "./repositories/sandboxRepository.js";
+import { InMemoryTemplateRepository } from "./repositories/templateRepository.js";
 import { FakeRuntime } from "./runtime/fakeRuntime.js";
 import { SandboxService } from "./services/sandboxService.js";
-import { WarmPool } from "./services/warmPool.js";
+import { WarmPools } from "./services/warmPool.js";
 
 // HTTP layer against the fake runtime: routes, status codes and auth, no Docker.
 function makeApp(options: AppOptions = {}, env: NodeJS.ProcessEnv = {}) {
-  const config = loadConfig({ POOL_SIZE: "0", ...env });
+  const config = loadConfig({ POOL_SIZES: "default:0", ...env });
   const runtime = new FakeRuntime();
   const service = new SandboxService(
     new InMemorySandboxRepository(),
+    new InMemoryTemplateRepository(),
     runtime,
     config,
     new FakeClock(new Date("2026-01-01T00:00:00Z")),
     new CounterIdGenerator("sbx_"),
-    new WarmPool(runtime, config.defaults, config.poolSize),
+    new WarmPools(),
   );
   return { app: createApp(service, options), service, runtime };
 }
@@ -123,10 +125,9 @@ test("exec/stream reports a failure after the stream began as an error event", a
 test("GET /stats reports live sandboxes and the pool", async () => {
   const { app } = makeApp();
   await app.request("/sandboxes", { method: "POST", body: "{}" });
-  assert.deepEqual(await (await app.request("/stats")).json(), {
-    sandboxes: { live: 1, max: 20 },
-    pool: { size: 0, ready: 0, starting: 0, hits: 0, misses: 1 },
-  });
+  assert.deepEqual(await (await app.request("/stats")).json(), { sandboxes: { live: 1, max: 20 }, pools: {} });
+  assert.deepEqual(await (await app.request("/templates")).json(), [{ name: "default", image: "python:3.12-slim" }]);
   const { app: locked } = makeApp({ apiKey: "k" });
   assert.equal((await locked.request("/stats")).status, 401);
+  assert.equal((await locked.request("/templates")).status, 401);
 });
