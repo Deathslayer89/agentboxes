@@ -45,8 +45,12 @@ const reaper = setInterval(() => {
     .catch((err) => console.error("reaper:", err));
 }, config.reaperIntervalMs);
 
-const server = serve({ fetch: createApp(service).fetch, port: config.port }, (info) => {
-  console.log(`agentbox listening on http://localhost:${info.port} (image ${config.image}, runtime runsc)`);
+if (config.apiKey === undefined) {
+  console.log("agentbox: AGENTBOX_API_KEY is not set, so auth is off and only loopback is served");
+}
+const appOptions = config.apiKey === undefined ? {} : { apiKey: config.apiKey };
+const server = serve({ fetch: createApp(service, appOptions).fetch, hostname: config.host, port: config.port }, (info) => {
+  console.log(`agentbox listening on http://${info.address}:${info.port} (image ${config.image}, runtime runsc)`);
 });
 
 // State is in memory, so after a restart these sandboxes would be orphans anyway;

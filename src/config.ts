@@ -2,6 +2,10 @@ import type { SandboxLimits } from "./models/sandbox.js";
 
 export interface Config {
   port: number;
+  // Interface to listen on. Without an API key the server only binds to loopback.
+  host: string;
+  // A1: shared bearer token. Undefined means auth is off and host is forced to 127.0.0.1.
+  apiKey: string | undefined;
   // Image every sandbox starts from. Templates (Day 2) build FROM this.
   image: string;
   // Limits a sandbox gets when the request does not say otherwise.
@@ -26,8 +30,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     return value;
   };
 
+  const apiKey = env.AGENTBOX_API_KEY || undefined;
   const config: Config = {
     port: num("PORT", 7788),
+    host: apiKey === undefined ? "127.0.0.1" : env.HOST || "0.0.0.0",
+    apiKey,
     image: env.AGENTBOX_IMAGE ?? "python:3.12-slim",
     defaults: {
       memoryMb: num("DEFAULT_MEMORY_MB", 512),
