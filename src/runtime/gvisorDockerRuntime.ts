@@ -53,16 +53,20 @@ interface RunResult {
 }
 
 export class GvisorDockerRuntime implements SandboxRuntime {
+  // Resolved at init: "auto" becomes runsc-kvm when registered, else runsc.
+  runtimeName: string;
+
   constructor(
     private readonly docker: Docker,
-    // runsc, or a registered variant such as runsc-kvm. Checked at init; never runc.
-    private readonly runtimeName: string,
+    requestedRuntime: string,
     private readonly image: string,
     private readonly maxOutputBytes: number,
     private readonly maxFileBytes: number,
     private readonly maxArchiveBytes: number,
     private readonly egress: EgressProxyManager,
-  ) {}
+  ) {
+    this.runtimeName = requestedRuntime;
+  }
 
   async init(): Promise<void> {
     let info: { Runtimes?: Record<string, unknown> };
@@ -71,7 +75,9 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     } catch (e) {
       throw new RuntimeUnavailableError(`cannot reach Docker: ${messageOf(e)}`);
     }
-    if (!info.Runtimes || !(this.runtimeName in info.Runtimes)) {
+    const registered = info.Runtimes ?? {};
+    if (this.runtimeName === "auto") this.runtimeName = "runsc-kvm" in registered ? "runsc-kvm" : "runsc";
+    if (!(this.runtimeName in registered)) {
       throw new RuntimeUnavailableError(
         `Docker runtime "${this.runtimeName}" is not registered. Install gVisor, run "sudo runsc install", then restart Docker.`,
       );

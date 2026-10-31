@@ -72,7 +72,7 @@ if (config.apiKey === undefined) {
 }
 const appOptions = config.apiKey === undefined ? {} : { apiKey: config.apiKey };
 const server = serve({ fetch: createApp(service, appOptions).fetch, hostname: config.host, port: config.port }, (info) => {
-  console.log(`agentbox listening on http://${info.address}:${info.port} (image ${config.image}, runtime ${config.runtime})`);
+  console.log(`agentbox listening on http://${info.address}:${info.port} (image ${config.image}, runtime ${runtime.runtimeName})`);
 });
 
 /**

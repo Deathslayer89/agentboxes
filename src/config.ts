@@ -9,7 +9,7 @@ export interface Config {
   apiKey: string | undefined;
   // Image every sandbox starts from. Templates build FROM this.
   image: string;
-  // Docker runtime name. Must be runsc or a variant of it such as runsc-kvm; there is no runc option.
+  // Docker runtime name: "auto" picks runsc-kvm when it is registered and runsc otherwise. Never runc.
   runtime: string;
   // Limits a sandbox gets when the request does not say otherwise.
   defaults: SandboxLimits;
@@ -47,7 +47,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     host: apiKey === undefined ? "127.0.0.1" : env.HOST || "0.0.0.0",
     apiKey,
     image: env.AGENTBOX_IMAGE ?? "python:3.12-slim",
-    runtime: env.AGENTBOX_RUNTIME || "runsc",
+    runtime: env.AGENTBOX_RUNTIME || "auto",
     defaults: {
       memoryMb: num("DEFAULT_MEMORY_MB", 512),
       cpus: num("DEFAULT_CPUS", 1),
@@ -73,8 +73,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     secretsEnv: env,
   };
 
-  if (!/^runsc(-[a-z0-9]+)?$/.test(config.runtime)) {
-    throw new Error(`AGENTBOX_RUNTIME must be runsc or a runsc variant such as runsc-kvm, got "${config.runtime}"`);
+  if (config.runtime !== "auto" && !/^runsc(-[a-z0-9]+)?$/.test(config.runtime)) {
+    throw new Error(`AGENTBOX_RUNTIME must be auto, runsc or a runsc variant such as runsc-kvm, got "${config.runtime}"`);
   }
   // A default above its maximum would make every plain create() fail; catch that at boot.
   for (const key of Object.keys(config.maximums) as (keyof SandboxLimits)[]) {

@@ -16,8 +16,9 @@ test("a default above its maximum is refused at boot", () => {
   assert.throws(() => loadConfig({ MAX_SANDBOXES: "0" }), /positive/);
 });
 
-test("AGENTBOX_RUNTIME accepts runsc variants only", () => {
-  assert.equal(loadConfig({}).runtime, "runsc");
+test("AGENTBOX_RUNTIME accepts runsc variants only, and defaults to auto", () => {
+  assert.equal(loadConfig({}).runtime, "auto");
+  assert.equal(loadConfig({ AGENTBOX_RUNTIME: "runsc" }).runtime, "runsc");
   assert.equal(loadConfig({ AGENTBOX_RUNTIME: "runsc-kvm" }).runtime, "runsc-kvm");
   assert.throws(() => loadConfig({ AGENTBOX_RUNTIME: "runc" }), /runsc/);
 });

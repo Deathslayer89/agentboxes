@@ -30,6 +30,8 @@ let id: string;
 
 before(async () => {
   await runtime.init();
+  assert.match(runtime.runtimeName, /^runsc/, "auto resolved to a gVisor runtime");
+  console.log(`runtime: ${runtime.runtimeName}`);
   id = (await service.create()).id;
 });
 

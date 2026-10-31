@@ -192,7 +192,7 @@ Installing packages at run time (`pip install` inside a sandbox) fails today bec
 
 | | Default | Env var |
 |---|---|---|
-| Runtime | gVisor (`runsc`, or a registered variant such as `runsc-kvm`) | `AGENTBOX_RUNTIME` |
+| Runtime | gVisor: `runsc-kvm` when registered, else `runsc` | `AGENTBOX_RUNTIME` (`auto`) |
 | Network | none, or an allowlist through the egress proxy | |
 | Memory | 512 MB for processes, no swap | `DEFAULT_MEMORY_MB`, `MAX_MEMORY_MB` |
 | CPUs | 1 | `DEFAULT_CPUS`, `MAX_CPUS` |
@@ -208,7 +208,7 @@ Other settings: `PORT` (7788), `HOST`, `AGENTBOX_API_KEY`, `AGENTBOX_IMAGE` (`py
 
 ### gVisor's KVM platform
 
-By default runsc uses the systrap platform, which works everywhere. On a machine with `/dev/kvm`, the KVM platform cuts syscall overhead. Register it as a second runtime (needs sudo), then point agentbox at it:
+By default runsc uses the systrap platform, which works everywhere. On a machine with `/dev/kvm`, the KVM platform runs gVisor's kernel as a guest and cuts syscall overhead. Register it as a second runtime (needs sudo); agentbox uses it automatically when it is there:
 
 ```bash
 sudo python3 - <<'PY'
@@ -218,10 +218,10 @@ json.dump(d, open(p,"w"), indent=4)
 PY
 sudo systemctl restart docker
 docker run --rm --runtime=runsc-kvm alpine uname -a
-AGENTBOX_RUNTIME=runsc-kvm npm start
+npm start        # logs "runtime runsc-kvm"
 ```
 
-`AGENTBOX_RUNTIME` only accepts `runsc` or a `runsc-` variant; there is no way to run on plain runc.
+Measured on this machine, one process writing and reading 3000 small files: 228 ms on systrap, 133 ms on KVM, 66 ms on runc. `npm install express`: 1945 ms, 1238 ms, 1110 ms. Python startup is unchanged at about 14 ms, and a cold sandbox start is about 20 ms slower on KVM (150 ms against 130 ms) because each sandbox sets up a small VM. `AGENTBOX_RUNTIME` accepts `auto` (the default), `runsc`, or a `runsc-` variant; there is no way to run on plain runc.
 
 ## Benchmarks
 
@@ -237,7 +237,7 @@ Machine: 12th Gen Intel Core i7-12700H, 20 threads, 15 GB RAM, Linux 7.0.0, Dock
 
 Five creates fired at the same time against a pool of five took 57 to 73 ms each, and a sixth create during the refill started cold at 141 ms. An idle sandbox holds about 16 MB of host memory with gVisor's sentry included, so about 63 idle sandboxes fit in 1 GB of RAM. A sandbox with a network allowlist starts cold in about 300 ms, since it also gets its own Docker network and the proxy joins it; with secrets, installing the CA adds another 300 ms.
 
-The roadmap's kill criterion is gVisor being about 3x slower than runc on common tasks. Measured here: Python startup 14 ms under gVisor against 11 ms under runc, `pip install requests` 2.0 s against 1.9 s, and `npm install express` (65 packages, node template) 1.8 s against 1.3 s. Syscall-heavy microbenchmarks (thousands of tiny files, process spawn loops) do show 3 to 4x, so the KVM platform above is worth registering on a host that has it.
+The roadmap's kill criterion is gVisor being about 3x slower than runc on common tasks. Measured here on the systrap platform: Python startup 14 ms under gVisor against 11 ms under runc, `pip install requests` 2.0 s against 1.9 s, and `npm install express` (65 packages, node template) 1.8 s against 1.3 s. Syscall-heavy microbenchmarks (thousands of tiny files, process spawn loops) show 3 to 4x on systrap and about 2x on the KVM platform, which brings `npm install` to within 12% of runc.
 
 Why `/workspace` is a tmpfs and not a disk volume: one Python process writing and reading 3000 small files took 214 ms on tmpfs under gVisor and 353 ms on a Docker volume under gVisor (85 ms and 62 ms under plain runc). Files in RAM are the faster choice under gVisor, and the size limit is real; the cost is that `diskMb` is memory.
 
