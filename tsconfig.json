@@ -14,5 +14,5 @@
     "skipLibCheck": true,
     "allowJs": true
   },
-  "include": ["src", "test", "sdk/src", "examples", "proxy", "mcp"]
+  "include": ["src", "test", "sdk/src", "examples", "proxy", "mcp", "bench"]
 }

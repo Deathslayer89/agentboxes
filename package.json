@@ -11,6 +11,7 @@
     "agentbox": "tsx src/cli.ts",
     "example": "tsx examples/sdk-basic.ts",
     "mcp": "tsx mcp/server.ts",
+    "bench": "tsx bench/run.ts",
     "build:sdk": "tsc -p sdk/tsconfig.json",
     "test": "tsx --test test/unit/*/*.test.ts",
     "test:integration": "tsx --test test/integration/*.test.ts"

@@ -2,7 +2,7 @@
 
 Self-hosted sandboxes for AI agents. Runs on any Linux box with Docker and gVisor; no KVM needed.
 
-Status: v0.1 in progress. Create, exec, streaming exec, files, warm pool, templates, TTL reaper, API key, TypeScript SDK, network allowlist, secret injection and the MCP server are here. The benchmark script and the threat model come next.
+Status: v0.1 in progress. Everything below works and has a test or a benchmark behind it. Still to come: a Mastra example and the threat model.
 
 ## Requirements
 
@@ -179,6 +179,28 @@ Installing packages at run time (`pip install` inside a sandbox) fails today bec
 | Host mounts, docker socket, host env | none | |
 
 Other settings: `PORT` (7788), `HOST`, `AGENTBOX_API_KEY`, `AGENTBOX_IMAGE` (`python:3.12-slim`), `MAX_SANDBOXES` (20), `MAX_OUTPUT_BYTES` per stream per exec (1 MiB, output past it is dropped and `truncated` is true), `MAX_FILE_BYTES` (8 MiB), `POOL_SIZES` (`default:3`), `REAPER_INTERVAL_MS` (10000).
+
+## Benchmarks
+
+`npm run bench` measures through the HTTP API against a running server started with `POOL_SIZES=default:5`. Numbers from this machine on 2026-11-01:
+
+Machine: 12th Gen Intel Core i7-12700H, 20 threads, 15 GB RAM, Linux 7.0.0, Docker 29.1.3, runsc release-20261026.0
+
+| Measurement (HTTP round trip) | n | p50 ms | p95 ms | p99 ms |
+|---|---|---|---|---|
+| create from warm pool | 20 | 2.3 | 4.9 | 12.4 |
+| create cold (no pool) | 10 | 209.5 | 240.3 | 240.3 |
+| exec `print(2+2)` | 30 | 84.3 | 101.0 | 109.7 |
+
+An idle sandbox holds about 16 MB of host memory with gVisor's sentry included, so about 62 idle sandboxes fit in 1 GB of RAM. A sandbox with a network allowlist starts cold in about 600 ms, since it also gets its own Docker network, the proxy joins it, and the CA is installed.
+
+## What this is not
+
+- Not multi-node: one server, one Docker host, state in memory. A restart forgets sandboxes and removes their containers.
+- Not KVM-level isolation: gVisor is a user-space kernel that handles most syscalls itself, but the host kernel still serves the ones it forwards, and the sentry runs as a host process. The threat model will spell out what an attacker inside a sandbox can still do.
+- Not multi-tenant: one API key for everyone who can reach the server. Per-key limits are planned for v0.2.
+- Not ready for big workspaces: `/workspace` is memory-backed, so a large `node_modules` or repository counts against the sandbox's memory limit.
+- Not a preview host: nothing inside a sandbox is reachable from outside, and nothing is persisted after the TTL.
 
 ## Tests
 
