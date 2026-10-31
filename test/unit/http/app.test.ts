@@ -41,6 +41,8 @@ test("create, exec, get, list, destroy over HTTP", async () => {
   assert.equal(((await (await app.request("/sandboxes")).json()) as unknown[]).length, 1);
   assert.equal((await app.request(`/sandboxes/${id}`, { method: "DELETE" })).status, 200);
   assert.equal((await app.request(`/sandboxes/${id}/exec`, { method: "POST", body: JSON.stringify({ cmd: ["true"] }) })).status, 409);
+  assert.equal(((await (await app.request("/sandboxes")).json()) as unknown[]).length, 0, "destroyed sandboxes are hidden by default");
+  assert.equal(((await (await app.request("/sandboxes?all=true")).json()) as unknown[]).length, 1);
 });
 
 test("errors map to status codes: bad JSON 400, unknown id 404", async () => {
@@ -160,4 +162,20 @@ test("POST /sandboxes/:id/extend returns the record with a later expiry", async 
   const extended = (await (await app.request(`/sandboxes/${created.id}/extend`, { method: "POST", body: JSON.stringify({ ttlSeconds: 1200 }) })).json()) as { expiresAt: string };
   assert.ok(new Date(extended.expiresAt) > new Date(created.expiresAt));
   assert.equal((await app.request(`/sandboxes/${created.id}/extend`, { method: "POST", body: JSON.stringify({ ttlSeconds: 0 }) })).status, 400);
+});
+
+test("GET /metrics counts what the service did", async () => {
+  const { app } = makeApp();
+  const { id } = (await (await app.request("/sandboxes", { method: "POST", body: "{}" })).json()) as { id: string };
+  await app.request(`/sandboxes/${id}/exec`, { method: "POST", body: JSON.stringify({ cmd: ["true"] }) });
+  await app.request(`/sandboxes/${id}`, { method: "DELETE" });
+  const res = await app.request("/metrics");
+  assert.match(res.headers.get("content-type") ?? "", /text\/plain/);
+  const text = await res.text();
+  assert.match(text, /agentbox_creates_total\{source="cold"\} 1\n/);
+  assert.match(text, /agentbox_exec_duration_seconds_count 1\n/);
+  assert.match(text, /agentbox_removals_total\{reason="destroyed"\} 1\n/);
+  assert.match(text, /agentbox_sandboxes_live 0\n/);
+  const { app: locked } = makeApp({ apiKey: "k" });
+  assert.equal((await locked.request("/metrics")).status, 401);
 });

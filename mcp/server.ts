@@ -82,7 +82,11 @@ server.registerTool(
       const box = await sandbox();
       const { file, cmd } = LANGUAGES[language];
       await box.writeFile(file, code);
-      return text(describe(await box.exec(cmd, timeoutMs === undefined ? {} : { timeoutMs })));
+      const result = await box.exec(cmd, timeoutMs === undefined ? {} : { timeoutMs });
+      if (result.exitCode === 127 && language === "javascript") {
+        return text(`${describe(result)}\nnode is not in this sandbox's image. Start the MCP server with AGENTBOX_TEMPLATE=node after building that template.`, true);
+      }
+      return text(describe(result));
     }),
 );
 
@@ -132,6 +136,26 @@ server.registerTool(
       return text(old === undefined ? "no sandbox was open" : `destroyed sandbox ${old.id}`);
     }),
 );
+
+/**
+ * When the client goes away, so does the session's sandbox. A client ends our stdin first and
+ * only signals later, so stdin ending, the transport closing and a signal all share one destroy.
+ */
+let closing: Promise<void> | undefined;
+function closeSandbox(): Promise<void> {
+  closing ??= (async () => {
+    const old = current;
+    current = undefined;
+    if (old === undefined) return;
+    console.error(`agentbox mcp: client gone, destroying sandbox ${old.id}`);
+    await old.destroy().catch((err: unknown) => console.error(`agentbox mcp: destroy failed: ${err instanceof Error ? err.message : String(err)}`));
+  })();
+  return closing;
+}
+const leave = () => void closeSandbox().finally(() => process.exit(0));
+process.stdin.once("end", leave);
+server.server.onclose = () => void closeSandbox();
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, leave);
 
 await server.connect(new StdioServerTransport());
 console.error(`agentbox mcp: connected, server ${client["baseUrl"]}`);

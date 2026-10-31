@@ -16,6 +16,13 @@ test("a default above its maximum is refused at boot", () => {
   assert.throws(() => loadConfig({ MAX_SANDBOXES: "0" }), /positive/);
 });
 
+test("the server stays on loopback unless HOST is set, and a non-loopback HOST needs an API key", () => {
+  assert.equal(loadConfig({}).host, "127.0.0.1");
+  assert.equal(loadConfig({ AGENTBOX_API_KEY: "k" }).host, "127.0.0.1");
+  assert.equal(loadConfig({ AGENTBOX_API_KEY: "k", HOST: "0.0.0.0" }).host, "0.0.0.0");
+  assert.throws(() => loadConfig({ HOST: "0.0.0.0" }), /AGENTBOX_API_KEY/);
+});
+
 test("AGENTBOX_RUNTIME accepts runsc variants only, and defaults to auto", () => {
   assert.equal(loadConfig({}).runtime, "auto");
   assert.equal(loadConfig({ AGENTBOX_RUNTIME: "runsc" }).runtime, "runsc");

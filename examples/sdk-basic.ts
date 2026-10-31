@@ -2,8 +2,12 @@
 import { Agentbox } from "../sdk/src/index.js";
 
 const agentbox = new Agentbox({ baseUrl: process.env.AGENTBOX_URL ?? "http://127.0.0.1:7788", ...(process.env.AGENTBOX_API_KEY ? { apiKey: process.env.AGENTBOX_API_KEY } : {}) });
-const t0 = performance.now();
-const lap = (label: string) => console.log(`${label.padEnd(12)} ${(performance.now() - t0).toFixed(0).padStart(5)} ms`);
+let last = performance.now();
+const lap = (label: string) => {
+  const now = performance.now();
+  console.log(`${label.padEnd(12)} ${(now - last).toFixed(0).padStart(5)} ms`);
+  last = now;
+};
 
 const box = await agentbox.create();
 lap(`create (${box.info.startup.source})`);

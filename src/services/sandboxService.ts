@@ -7,6 +7,7 @@ import { DEFAULT_TEMPLATE, type Template } from "../models/template.js";
 import type { SandboxRepository } from "../repositories/sandboxRepository.js";
 import type { TemplateRepository } from "../repositories/templateRepository.js";
 import type { DeniedRequest, EgressPolicy, OutputListener, SandboxRuntime } from "../runtime/sandboxRuntime.js";
+import { Metrics } from "./metrics.js";
 import type { PoolStats, WarmPools } from "./warmPool.js";
 import { resolveWorkspaceDir, resolveWorkspacePath } from "./workspacePath.js";
 
@@ -17,6 +18,8 @@ import { resolveWorkspaceDir, resolveWorkspacePath } from "./workspacePath.js";
 const GONE_RETENTION_MS = 10 * 60 * 1000;
 
 export class SandboxService {
+  readonly metrics = new Metrics();
+
   constructor(
     private readonly sandboxes: SandboxRepository,
     private readonly templates: TemplateRepository,
@@ -73,6 +76,7 @@ export class SandboxService {
     sandbox.startup.ms = Math.round((performance.now() - startedAt) * 10) / 10;
     sandbox.status = "ready";
     this.sandboxes.save(sandbox);
+    this.metrics.creates[sandbox.startup.source] += 1;
     return sandbox;
   }
 
@@ -105,6 +109,10 @@ export class SandboxService {
     return { sandboxes: { live: this.liveCount(), max: this.config.maxSandboxes }, pools: this.pools.stats() };
   }
 
+  metricsText(): string {
+    return this.metrics.render(this.liveCount(), this.pools.stats());
+  }
+
   // The default template is the base image; every other template is a labelled Docker image.
   async listTemplates(): Promise<Template[]> {
     return [{ name: DEFAULT_TEMPLATE, image: this.config.image }, ...(await this.templates.list())];
@@ -122,8 +130,9 @@ export class SandboxService {
     return sandbox;
   }
 
-  list(): Sandbox[] {
-    return this.sandboxes.findAll();
+  // Live sandboxes by default; `all` includes the expired and destroyed ones still within retention.
+  list(all = false): Sandbox[] {
+    return this.sandboxes.findAll().filter((s) => all || !isGone(s));
   }
 
   // With onOutput, chunks are delivered as they arrive; the result still holds the full output.
@@ -133,7 +142,12 @@ export class SandboxService {
       throw new ValidationError(`timeoutMs ${timeoutMs} exceeds the server maximum of ${this.config.maxExecTimeoutMs}`);
     }
     const options = { timeoutMs, cwd: resolveWorkspaceDir(request.cwd ?? "/workspace"), env: request.env ?? {}, ...(signal === undefined ? {} : { signal }) };
-    return this.occupy(id, (handle) => this.runtime.exec(handle, request.cmd, options, onOutput));
+    const startedAt = performance.now();
+    try {
+      return await this.occupy(id, (handle) => this.runtime.exec(handle, request.cmd, options, onOutput));
+    } finally {
+      this.metrics.observeExec((performance.now() - startedAt) / 1000);
+    }
   }
 
   // Files live under /workspace only. Returns the absolute path that was written.
@@ -205,6 +219,36 @@ export class SandboxService {
   }
 
   /**
+   * After a server restart: a record whose container still runs becomes ready again; one
+   * whose container is gone is marked expired. Sandboxes with a network are destroyed
+   * when the proxy did not survive, since their policies went with it.
+   */
+  async adopt(): Promise<{ adopted: string[]; lost: string[] }> {
+    const running = new Set((await this.runtime.listManaged()).map((c) => c.handle));
+    const adopted: string[] = [];
+    const lost: string[] = [];
+    for (const sandbox of this.sandboxes.findAll()) {
+      if (isGone(sandbox)) continue;
+      const alive = sandbox.handle !== undefined && running.has(sandbox.handle);
+      if (alive && (sandbox.network === undefined || this.runtime.egressKept())) {
+        sandbox.status = "ready";
+        sandbox.activeExecs = 0;
+        this.sandboxes.save(sandbox);
+        adopted.push(sandbox.id);
+        continue;
+      }
+      if (alive) await this.remove(sandbox, "destroyed");
+      else {
+        sandbox.status = "expired";
+        sandbox.handle = undefined;
+        this.sandboxes.save(sandbox);
+      }
+      lost.push(sandbox.id);
+    }
+    return { adopted, lost };
+  }
+
+  /**
    * One reaper pass: destroy expired sandboxes, forget long-gone records, and remove
    * containers the runtime still has that this server does not know about.
    */
@@ -247,6 +291,7 @@ export class SandboxService {
     // Status first, so anything racing with us (an exec, a second destroy) sees it as gone.
     sandbox.status = finalStatus;
     this.sandboxes.save(sandbox);
+    this.metrics.removals[finalStatus] += 1;
     if (sandbox.handle !== undefined) {
       await this.runtime.destroy(sandbox.handle);
       sandbox.handle = undefined;

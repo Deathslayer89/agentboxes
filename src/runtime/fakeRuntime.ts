@@ -36,6 +36,13 @@ export class FakeRuntime implements SandboxRuntime {
     return this.deniedLogs.get(sandboxId) ?? [];
   }
 
+  // What egressKept() answers; tests flip it to simulate a lost proxy.
+  egressKeptAcrossRestart = true;
+
+  egressKept(): boolean {
+    return this.egressKeptAcrossRestart;
+  }
+
   async shutdown(): Promise<void> {}
 
   // Echoes the command back on stdout, in two chunks so streaming tests see more than one.

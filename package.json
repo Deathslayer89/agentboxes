@@ -5,7 +5,7 @@
   "description": "Self-hosted sandboxes for AI agents: gVisor isolation on any Linux box, no KVM needed",
   "type": "module",
   "scripts": {
-    "start": "tsx src/main.ts",
+    "start": "node --import tsx src/main.ts",
     "dev": "tsx watch src/main.ts",
     "typecheck": "tsc",
     "agentbox": "tsx src/cli.ts",
@@ -20,11 +20,13 @@
   "dependencies": {
     "@hono/node-server": "^2.1.5",
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "better-sqlite3": "^12.11.1",
     "dockerode": "^5.0.1",
     "hono": "^4.13.14",
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/dockerode": "^4.0.2",
     "@types/node": "^20.19.43",
     "tsx": "^4.23.15",

@@ -1,10 +1,6 @@
 import type { Sandbox } from "../models/sandbox.js";
 
-/**
- * Where sandbox records live. v0.1 keeps them in memory (a server restart forgets
- * them; the reaper then removes their containers as orphans). v0.2 adds SQLite
- * behind this same interface.
- */
+// Where sandbox records live: memory for tests, SQLite for the server (sqliteStore.ts).
 export interface SandboxRepository {
   save(sandbox: Sandbox): void;
   findById(id: string): Sandbox | undefined;

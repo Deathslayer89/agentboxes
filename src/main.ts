@@ -6,7 +6,7 @@ import { RuntimeUnavailableError } from "./errors.js";
 import { createApp } from "./http/app.js";
 import { RandomIdGenerator } from "./id.js";
 import { DEFAULT_TEMPLATE } from "./models/template.js";
-import { InMemorySandboxRepository } from "./repositories/sandboxRepository.js";
+import { SqliteStore } from "./repositories/sqliteStore.js";
 import { EgressProxyManager } from "./runtime/egressProxy.js";
 import { DockerTemplateRepository } from "./repositories/templateRepository.js";
 import { GvisorDockerRuntime } from "./runtime/gvisorDockerRuntime.js";
@@ -15,7 +15,8 @@ import { WarmPool, WarmPools } from "./services/warmPool.js";
 
 const config = loadConfig();
 const docker = new Docker();
-const runtime = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker));
+const store = new SqliteStore(config.dbPath);
+const runtime = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker, store.settings));
 const templates = new DockerTemplateRepository(docker);
 
 // Refuse to start without gVisor instead of silently running on runc.
@@ -43,7 +44,7 @@ for (const [template, size] of Object.entries(config.poolSizes)) {
 }
 
 const service = new SandboxService(
-  new InMemorySandboxRepository(),
+  store.sandboxes,
   templates,
   runtime,
   config,
@@ -52,7 +53,10 @@ const service = new SandboxService(
   pools,
 );
 
-// Clean up containers left behind by a previous run, then fill the pool, before taking requests.
+// Take back the sandboxes of the previous run, drop what did not survive, then fill the pool, before taking requests.
+const { adopted, lost } = await service.adopt();
+if (adopted.length > 0) console.log(`agentbox: adopted ${adopted.length} running sandbox(es) from the previous run`);
+if (lost.length > 0) console.log(`agentbox: ${lost.length} sandbox(es) from the previous run did not survive: ${lost.join(", ")}`);
 const leftovers = await service.reap();
 if (leftovers.orphans.length > 0) console.log(`agentbox: removed ${leftovers.orphans.length} orphaned container(s)`);
 for (const [template, s] of Object.entries(pools.stats())) console.log(`agentbox: warm pool ${template}: ${s.ready} of ${s.size} ready`);
@@ -68,23 +72,21 @@ const reaper = setInterval(() => {
 }, config.reaperIntervalMs);
 
 if (config.apiKey === undefined) {
-  console.log("agentbox: AGENTBOX_API_KEY is not set, so auth is off and only loopback is served");
+  console.log("agentbox: AGENTBOX_API_KEY is not set, so auth is off; set it and HOST=0.0.0.0 to serve other machines");
 }
 const appOptions = config.apiKey === undefined ? {} : { apiKey: config.apiKey };
 const server = serve({ fetch: createApp(service, appOptions).fetch, hostname: config.host, port: config.port }, (info) => {
   console.log(`agentbox listening on http://${info.address}:${info.port} (image ${config.image}, runtime ${runtime.runtimeName})`);
 });
 
-/**
- * State is in memory, so after a restart these sandboxes would be orphans anyway;
- * remove them now rather than leaving containers running.
- */
+// Sandboxes keep running: their records are on disk and the next start adopts them. Only the pool is drained.
 async function shutdown(signal: string): Promise<void> {
-  console.log(`agentbox: ${signal} received, destroying sandboxes`);
+  console.log(`agentbox: ${signal} received, leaving ${service.list().filter((s) => s.status !== "expired" && s.status !== "destroyed").length} sandbox(es) running`);
   clearInterval(reaper);
   server.close();
-  await Promise.all([pools.drain(), ...service.list().map((s) => service.destroy(s.id).catch(() => {}))]);
+  await pools.drain();
   await runtime.shutdown();
+  store.close();
   process.exit(0);
 }
 process.once("SIGINT", () => void shutdown("SIGINT"));

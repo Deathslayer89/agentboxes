@@ -208,3 +208,26 @@ test("extend moves the expiry forward from now, within the maximum, and only for
   await service.destroy(id);
   assert.throws(() => service.extend(id), ConflictError);
 });
+
+test("adopt after a restart: running containers come back ready, gone ones are expired, networked ones depend on the proxy", async () => {
+  const { service, runtime } = makeService({ OPENAI_API_KEY: "sk" });
+  const plain = await service.create();
+  const networked = await service.create({ allowHosts: ["pypi.org"] });
+  const vanished = await service.create();
+  runtime.containers.delete(vanished.handle ?? "");
+  // Simulate the restart: records persist, in-flight state does not.
+  plain.status = "busy";
+  plain.activeExecs = 1;
+
+  let result = await service.adopt();
+  assert.deepEqual(result, { adopted: [plain.id, networked.id], lost: [vanished.id] });
+  assert.equal(service.get(plain.id).status, "ready");
+  assert.equal(service.get(plain.id).activeExecs, 0);
+  assert.equal(service.get(vanished.id).status, "expired");
+
+  runtime.egressKeptAcrossRestart = false;
+  result = await service.adopt();
+  assert.deepEqual(result, { adopted: [plain.id], lost: [networked.id] });
+  assert.equal(service.get(networked.id).status, "destroyed");
+  assert.equal(runtime.containers.has(networked.handle ?? ""), false);
+});

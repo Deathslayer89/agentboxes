@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type Docker from "dockerode";
+import type { SettingsRepository } from "../repositories/sqliteStore.js";
 import type { DeniedRequest, EgressPolicy } from "./sandboxRuntime.js";
 
 export interface EgressAttachment {
@@ -18,6 +19,7 @@ const CONTAINER = "agentbox-egress-proxy";
 const PROXY_PORT = 3128;
 const CONTROL_PORT = 3129;
 const LABEL_PROXY = "agentbox.proxy";
+const ADMIN_TOKEN_SETTING = "egressProxy.adminToken";
 const LABEL_SOURCE = "agentbox.proxy.source";
 // On networks; the value is the sandbox id.
 export const LABEL_NETWORK = "agentbox.network";
@@ -34,14 +36,19 @@ const MB = 1024 * 1024;
  * networks connected after start; otherwise it is hardened like a sandbox.
  */
 export class EgressProxyManager {
-  private readonly adminToken = randomBytes(24).toString("hex");
+  private adminToken = "";
   private containerId: string | undefined;
   private controlUrl: string | undefined;
   private caPem: string | undefined;
   // Set when the allowlist feature cannot work on this machine; create() then refuses allowHosts.
   unavailableReason: string | undefined;
+  // True when init() found the previous proxy container still running and kept it, with its policies intact.
+  reused = false;
 
-  constructor(private readonly docker: Docker) {}
+  constructor(
+    private readonly docker: Docker,
+    private readonly settings: SettingsRepository,
+  ) {}
 
   get available(): boolean {
     return this.unavailableReason === undefined;
@@ -60,11 +67,38 @@ export class EgressProxyManager {
     }
     try {
       await this.buildImage();
+      if (await this.reuseRunning()) return;
       await this.removeLeftovers();
+      this.adminToken = randomBytes(24).toString("hex");
+      this.settings.set(ADMIN_TOKEN_SETTING, this.adminToken);
       await this.startContainer();
     } catch (e) {
       this.unavailableReason = `the egress proxy could not start: ${e instanceof Error ? e.message : String(e)}`;
     }
+  }
+
+  // Keeps the proxy from the previous server run when it is still up and answers to the stored token.
+  private async reuseRunning(): Promise<boolean> {
+    const token = this.settings.get(ADMIN_TOKEN_SETTING);
+    if (token === undefined) return false;
+    const [running] = await this.docker.listContainers({ filters: { label: [`${LABEL_PROXY}=1`], status: ["running"] } });
+    if (running === undefined) return false;
+    const info = (await this.docker.getContainer(running.Id).inspect()) as { NetworkSettings: { Networks: Record<string, { IPAddress: string }> } };
+    const ip = info.NetworkSettings.Networks.bridge?.IPAddress;
+    if (!ip) return false;
+    this.adminToken = token;
+    this.containerId = running.Id;
+    this.controlUrl = `http://${ip}:${CONTROL_PORT}`;
+    try {
+      await this.control("GET", "/health");
+    } catch {
+      this.containerId = undefined;
+      this.controlUrl = undefined;
+      return false;
+    }
+    this.caPem = await (await this.control("GET", "/ca")).text();
+    this.reused = true;
+    return true;
   }
 
   // Creates the network, puts the proxy on it, registers the policy and returns what the sandbox needs.

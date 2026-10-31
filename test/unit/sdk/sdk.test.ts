@@ -90,6 +90,7 @@ test("create, exec, files, stream, destroy", async () => {
     { name: "data-science", image: "agentbox/data-science:latest" },
   ]);
   assert.equal((await agentbox.stats()).sandboxes.live, 0);
+  assert.equal((await agentbox.list()).length, 0);
 });
 
 test("typed errors: not found, pool exhausted, exec timeout, wrong key, validation", async () => {

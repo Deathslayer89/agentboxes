@@ -77,6 +77,9 @@ export interface SandboxRuntime {
    */
   listManaged(): Promise<Array<{ sandboxId: string; handle: string }>>;
 
-  // Stop anything the backend runs for itself, such as the egress proxy. Called once at shutdown.
+  // True when sandboxes with a network from before a server restart still have their proxy policies.
+  egressKept(): boolean;
+
+  // Stop anything the backend runs for itself. Called once at shutdown; the egress proxy is left running for adopted sandboxes.
   shutdown(): Promise<void>;
 }

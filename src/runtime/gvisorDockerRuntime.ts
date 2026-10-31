@@ -170,9 +170,12 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     return this.egress.deniedLog(sandboxId);
   }
 
-  async shutdown(): Promise<void> {
-    await this.egress.shutdown();
+  egressKept(): boolean {
+    return this.egress.reused;
   }
+
+  // The proxy stays up so sandboxes adopted by the next server run keep their network.
+  async shutdown(): Promise<void> {}
 
   async exec(handle: string, cmd: string[], options: ExecOptions, onOutput?: OutputListener): Promise<ExecResult> {
     const r = await this.run(handle, cmd, options.timeoutMs, {

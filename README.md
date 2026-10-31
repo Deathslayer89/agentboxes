@@ -25,14 +25,16 @@ docker run --rm --runtime=runsc alpine uname -a   # kernel line ends in -gvisor:
 
 ```bash
 npm install
-npm start          # listens on http://127.0.0.1:7788, pulls python:3.12-slim on first run
+npm start          # listens on http://127.0.0.1:7788, pulls python:3.12-slim on first run; Ctrl+C stops it
 ```
 
-Without `AGENTBOX_API_KEY` the server only listens on loopback and needs no auth. Set it to listen on all interfaces (`HOST` to change that) and require `Authorization: Bearer <key>` on every route except `/health`:
+The server listens on loopback and needs no auth until you say otherwise. To serve other machines, set a key and the interface; a non-loopback `HOST` without a key is refused at startup. With a key, every route except `/health` needs `Authorization: Bearer <key>`:
 
 ```bash
-AGENTBOX_API_KEY=$(openssl rand -hex 16) npm start
+AGENTBOX_API_KEY=$(openssl rand -hex 16) HOST=0.0.0.0 npm start
 ```
+
+If you run the server in the background, stop it by sending SIGTERM to the `node ... src/main.ts` process (`pkill -f 'src/main.ts'`), not only to the npm wrapper in front of it.
 
 ```bash
 # create a sandbox (all fields optional: template, memoryMb, cpus, diskMb, pids, ttlSeconds)
@@ -64,17 +66,17 @@ curl -s "localhost:7788/sandboxes/sbx_.../archive?path=repo" | tar -x -C ./out
 # keep a sandbox alive while it is in use: expiry becomes now plus ttlSeconds (default: its own TTL)
 curl -s -X POST localhost:7788/sandboxes/sbx_.../extend -d '{"ttlSeconds":1800}'
 
-# list, get, destroy
+# list (live ones; add ?all=true for expired and destroyed), get, destroy
 curl -s localhost:7788/sandboxes
 curl -s localhost:7788/sandboxes/sbx_...
 curl -s -X DELETE localhost:7788/sandboxes/sbx_...
 ```
 
-A command whose client disconnects, or whose streaming response is aborted, is killed inside the sandbox; the sandbox itself stays. Sandboxes expire after `ttlSeconds` (default 600, max 3600) unless extended. A reaper removes expired ones and any container labelled `agentbox=1` that the server does not know about.
+Sandbox records live in a SQLite file (`AGENTBOX_DB`, default `data/agentbox.db`). Stopping the server leaves sandboxes running; the next start adopts every sandbox whose container is still there, marks the others expired, and keeps using the egress proxy container from the previous run so allowlisted sandboxes keep their network. If Docker itself restarted, the proxy is gone and sandboxes that had a network are destroyed at startup, with a log line. A command whose client disconnects, or whose streaming response is aborted, is killed inside the sandbox; the sandbox itself stays. Sandboxes expire after `ttlSeconds` (default 600, max 3600) unless extended. A reaper removes expired ones and any container labelled `agentbox=1` that the server does not know about.
 
 ## Warm pool
 
-The server keeps default-sized containers started ahead of time, one pool per template, sized by `POOL_SIZES` (default `default:3`). A create request whose memory, cpus, disk and pids match the defaults takes one from its template's pool; `startup.source` says `pool` and `startup.ms` is the server-side time to ready. Any other size, or a template without a pool, starts a fresh container (`cold`), which takes Docker plus gVisor start time. Each pooled container is used once and destroyed with its sandbox; the pool refills all its missing containers at once, so a burst of creates costs one start's time. Pool containers do not count towards `MAX_SANDBOXES`. `GET /stats` shows size, ready, starting, hits and misses per pool.
+The server keeps default-sized containers started ahead of time, one pool per template, sized by `POOL_SIZES` (default `default:3`). A create request whose memory, cpus, disk and pids match the defaults takes one from its template's pool; `startup.source` says `pool` and `startup.ms` is the server-side time to ready. Any other size, or a template without a pool, starts a fresh container (`cold`), which takes Docker plus gVisor start time. Each pooled container is used once and destroyed with its sandbox; the pool refills all its missing containers at once, so a burst of creates costs one start's time. Pool containers do not count towards `MAX_SANDBOXES`. `GET /stats` shows size, ready, starting, hits and misses per pool, and `GET /metrics` exposes the same plus creates by source, removals by reason and an exec latency histogram in the Prometheus text format.
 
 ## Network: off by default, an allowlist per sandbox
 
@@ -87,7 +89,7 @@ curl -s localhost:7788/sandboxes/sbx_.../egress-log
 # {"allowHosts":["pypi.org","files.pythonhosted.org"],"denied":[{"at":"...","method":"CONNECT","host":"example.com","port":443,"reason":"host not in allowHosts"}]}
 ```
 
-How it works: such a sandbox gets its own internal Docker network with an isolated gateway (Docker 28+), so the only thing it can reach is the egress proxy container, not the internet and not the host. Inside, `HTTP_PROXY` and `HTTPS_PROXY` point at the proxy with a token that identifies the sandbox. The proxy lets allowlisted hosts through and refuses everything else with a 403, recording each refusal in the egress log. Hosts that resolve to loopback, link-local (the cloud metadata address `169.254.169.254`), private or multicast addresses are refused even when allowlisted. `*.example.com` in the allowlist matches subdomains.
+How it works: such a sandbox gets its own internal Docker network with an isolated gateway (Docker 28+), so the only thing it can reach is the egress proxy container, not the internet and not the host. Inside, `HTTP_PROXY` and `HTTPS_PROXY` point at the proxy with a token that identifies the sandbox. The proxy lets allowlisted hosts through and refuses everything else with a 403, recording each refusal in the egress log. Hosts that resolve to loopback, link-local (the cloud metadata address `169.254.169.254`), private or multicast addresses are refused even when allowlisted. `*.example.com` in the allowlist matches subdomains. The allowlist is by host name only: every port on an allowed host is reachable.
 
 pip, curl, git, npm, and Python's `urllib` and `requests` honour the proxy variables. Node's built-in `fetch` only does so with `NODE_USE_ENV_PROXY=1`, which the node template sets (verified on Node 22; undici prints an "experimental" warning). Installing packages at run time this way is the slow path; use a template for anything you need more than once.
 
@@ -104,10 +106,10 @@ The value of `OPENAI_API_KEY` is read from the server's environment and given on
 
 ## TypeScript SDK
 
-The client in `sdk/` has no dependencies and needs Node 20+. It is not on npm yet; until then import it from the repo or build it with `npm run build:sdk`.
+The client in `sdk/` has no dependencies and needs Node 20+. It is not on npm yet, so import it from the repo as `examples/sdk-basic.ts` does (`../sdk/src/index.js`), or build it with `npm run build:sdk`; once published the import will be `from "agentbox"`.
 
 ```ts
-import { Agentbox, ExecTimeout } from "agentbox";
+import { Agentbox, ExecTimeout } from "../sdk/src/index.js";
 
 const agentbox = new Agentbox({ baseUrl: "http://127.0.0.1:7788", apiKey: process.env.AGENTBOX_API_KEY });
 const box = await agentbox.create({ template: "default", ttlSeconds: 300, allowHosts: ["pypi.org"] });
@@ -128,11 +130,11 @@ for await (const event of box.execStream(["python", "main.py"])) {
 await box.destroy();
 ```
 
-Errors are typed: `SandboxNotFound` (404), `PoolExhausted` (the server's live sandbox limit, 429), `ExecTimeout` (the command was killed at its deadline; `error.result` holds the output so far) and `AgentboxError` for everything else, with `status` and the server's error `code`. `npm run example` runs `examples/sdk-basic.ts` against a local server and prints the time each step took.
+Errors are typed: `SandboxNotFound` (404), `PoolExhausted` (the server's live sandbox limit, 429), `ExecTimeout` (the command was killed at its deadline; `error.result` holds the output so far) and `AgentboxError` for everything else, with `status` and the server's error `code`. `npm run example` runs `examples/sdk-basic.ts` against a local server and prints the time each step took; `AGENTBOX_URL=http://127.0.0.1:7801 npm run example` points it at another port.
 
 ## MCP server for Claude Code and Cursor
 
-`npm run mcp` starts a Model Context Protocol server over stdio with five tools: `run_code` (python, bash or javascript), `run_command`, `write_file`, `read_file` and `reset_sandbox`. It keeps one sandbox per session, created on the first call and replaced after it expires. Start the agentbox server first, then register the MCP server.
+`npm run mcp` starts a Model Context Protocol server over stdio with five tools: `run_code` (python, bash, or javascript with `AGENTBOX_TEMPLATE=node`), `run_command`, `write_file`, `read_file` and `reset_sandbox`. It keeps one sandbox per session, created on the first call, kept alive while in use, and destroyed when the client disconnects. Start the agentbox server first, then register the MCP server.
 
 Claude Code:
 
@@ -186,7 +188,7 @@ curl -s -X POST localhost:7788/sandboxes -d '{"template":"data-science"}'
 
 Sandboxes still run as user 65534 with a read-only root, so anything the Dockerfile installs must be world-readable, which `pip install` as root already is. To keep a template instant, give it a pool: `POOL_SIZES=default:3,data-science:2`. The server refuses to start if `POOL_SIZES` names a template that has not been built.
 
-Installing packages at run time (`pip install` inside a sandbox) fails today because the sandbox has no network. The Day 3 egress allowlist will allow it per sandbox for `pypi.org` and `files.pythonhosted.org`, as the slow path.
+Installing packages at run time needs the network allowlist above, for example `allowHosts: ["pypi.org", "files.pythonhosted.org"]`; it is the slow path.
 
 ## What every sandbox gets
 
@@ -243,7 +245,7 @@ Why `/workspace` is a tmpfs and not a disk volume: one Python process writing an
 
 ## What this is not
 
-- Not multi-node: one server, one Docker host, state in memory. A restart forgets sandboxes and removes their containers.
+- Not multi-node: one server per Docker host. Records are in SQLite and a server restart adopts running sandboxes, but a Docker restart loses the egress proxy's state.
 - Not KVM-level isolation: gVisor is a user-space kernel that handles most syscalls itself, but the host kernel still serves the ones it forwards, and the sentry runs as a host process.
 - Not multi-tenant: one API key for everyone who can reach the server. Per-key limits are planned for v0.2.
 - Not disk-backed: `/workspace` is a tmpfs, so a large `node_modules` or repository is held in RAM, up to `diskMb`. Writing past `diskMb` fails with "no space left", not an OOM kill.
@@ -256,13 +258,13 @@ npm test                  # unit tests under test/unit, no Docker needed
 npm run test:integration  # test/integration: needs Docker, runsc and internet; checks each isolation default from inside a sandbox
 ```
 
-Tests live in `test/unit/<area>/` mirroring `src/`, plus `test/unit/proxy` and `test/unit/sdk`, and in `test/integration/`. Do not run the integration tests while a server is running on the same Docker: both own the proxy container and the reaper would remove each other's containers.
+Tests live in `test/unit/<area>/` mirroring `src/`, plus `test/unit/proxy` and `test/unit/sdk`, and in `test/integration/`. Do not run the integration tests while a server is running on the same Docker: both own the proxy container and the reaper would remove each other's containers. Like the server, the suite leaves the `agentbox-egress-proxy` container running for the next start to reuse.
 
 ## Layout
 
 ```
 src/models/        sandbox and template records, request/response types
-src/repositories/  where records live: sandboxes in memory for v0.1, templates as labelled Docker images
+src/repositories/  where records live: sandboxes and settings in SQLite, templates as labelled Docker images
 src/runtime/       SandboxRuntime interface and the gVisor-on-Docker implementation
 src/services/      SandboxService (create, exec, files, destroy, reap) and the warm pools
 src/http/          routes, auth and request parsing

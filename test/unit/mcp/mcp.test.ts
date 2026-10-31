@@ -47,8 +47,14 @@ before(async () => {
 });
 
 after(async () => {
-  await client.close();
-  server.close();
+  try {
+    await client.close();
+    // The MCP server destroys its sandbox when the client disconnects.
+    for (let i = 0; i < 50 && service.list().length > 0; i++) await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(service.list().length, 0, "the session sandbox is destroyed on disconnect");
+  } finally {
+    server.close();
+  }
 });
 
 test("the five tools are listed", async () => {

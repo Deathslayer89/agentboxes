@@ -55,10 +55,13 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
   if (options.apiKey !== undefined) {
     app.use("/sandboxes/*", bearerAuth(options.apiKey));
     app.use("/stats", bearerAuth(options.apiKey));
+    app.use("/metrics", bearerAuth(options.apiKey));
     app.use("/templates", bearerAuth(options.apiKey));
   }
 
   app.get("/stats", (c) => c.json(service.stats()));
+
+  app.get("/metrics", (c) => c.text(service.metricsText(), 200, { "content-type": "text/plain; version=0.0.4" }));
 
   app.get("/templates", async (c) => c.json(await service.listTemplates()));
 
@@ -67,7 +70,7 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
     return c.json(view(sandbox), 201);
   });
 
-  app.get("/sandboxes", (c) => c.json(service.list().map(view)));
+  app.get("/sandboxes", (c) => c.json(service.list(c.req.query("all") === "true").map(view)));
 
   app.get("/sandboxes/:id", (c) => c.json(view(service.get(c.req.param("id")))));
 

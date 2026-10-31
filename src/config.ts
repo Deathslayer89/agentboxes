@@ -3,9 +3,9 @@ import { DEFAULT_TEMPLATE, isValidTemplateName } from "./models/template.js";
 
 export interface Config {
   port: number;
-  // Interface to listen on. Without an API key the server only binds to loopback.
+  // Interface to listen on. Loopback unless HOST says otherwise; anything else needs an API key.
   host: string;
-  // A1: shared bearer token. Undefined means auth is off and host is forced to 127.0.0.1.
+  // Shared bearer token. Undefined means auth is off, which is only allowed on loopback.
   apiKey: string | undefined;
   // Image every sandbox starts from. Templates build FROM this.
   image: string;
@@ -30,6 +30,8 @@ export interface Config {
   reaperIntervalMs: number;
   // Where `secrets: { host: ENV_NAME }` values are read from. Never passed into a sandbox.
   secretsEnv: NodeJS.ProcessEnv;
+  // SQLite file for sandbox records and settings, so they survive a server restart.
+  dbPath: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -42,9 +44,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   };
 
   const apiKey = env.AGENTBOX_API_KEY || undefined;
+  const host = env.HOST || "127.0.0.1";
+  if (apiKey === undefined && !["127.0.0.1", "localhost", "::1"].includes(host)) {
+    throw new Error(`HOST=${host} would expose the server without an API key; set AGENTBOX_API_KEY first`);
+  }
   const config: Config = {
     port: num("PORT", 7788),
-    host: apiKey === undefined ? "127.0.0.1" : env.HOST || "0.0.0.0",
+    host,
     apiKey,
     image: env.AGENTBOX_IMAGE ?? "python:3.12-slim",
     runtime: env.AGENTBOX_RUNTIME || "auto",
@@ -71,6 +77,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     poolSizes: parsePoolSizes(env.POOL_SIZES),
     reaperIntervalMs: num("REAPER_INTERVAL_MS", 10_000),
     secretsEnv: env,
+    dbPath: env.AGENTBOX_DB || "data/agentbox.db",
   };
 
   if (config.runtime !== "auto" && !/^runsc(-[a-z0-9]+)?$/.test(config.runtime)) {

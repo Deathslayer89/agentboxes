@@ -13,7 +13,9 @@ import Docker from "dockerode";
 import { SystemClock } from "../../src/clock.js";
 import { loadConfig } from "../../src/config.js";
 import { RandomIdGenerator } from "../../src/id.js";
+import { InMemorySettings } from "../../src/repositories/inMemorySettings.js";
 import { InMemorySandboxRepository } from "../../src/repositories/sandboxRepository.js";
+import { SqliteStore } from "../../src/repositories/sqliteStore.js";
 import { EgressProxyManager, LABEL_NETWORK } from "../../src/runtime/egressProxy.js";
 import { DockerTemplateRepository } from "../../src/repositories/templateRepository.js";
 import { GvisorDockerRuntime } from "../../src/runtime/gvisorDockerRuntime.js";
@@ -22,7 +24,7 @@ import { WarmPool, WarmPools } from "../../src/services/warmPool.js";
 
 const config = loadConfig({ ...process.env, DEFAULT_TTL_SECONDS: "120" });
 const docker = new Docker();
-const runtime = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker));
+const runtime = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker, new InMemorySettings()));
 const templates = new DockerTemplateRepository(docker);
 const service = new SandboxService(new InMemorySandboxRepository(), templates, runtime, config, new SystemClock(), new RandomIdGenerator("sbxtest_"), new WarmPools());
 
@@ -295,4 +297,41 @@ test("S3: an aborted exec is killed inside the sandbox, and the sandbox keeps wo
   }
   assert.equal(left, "", `sleep processes still alive: ${left}`);
   assert.equal((await service.exec(id, { cmd: ["echo", "alive"] })).stdout.trim(), "alive");
+});
+
+test("restart: a second server run adopts running sandboxes from the SQLite file and reuses the proxy", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentbox-restart-"));
+  const path = join(dir, "agentbox.db");
+  const make = async (store: SqliteStore) => {
+    const egress = new EgressProxyManager(docker, store.settings);
+    const rt = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, egress);
+    await rt.init();
+    return { rt, egress, svc: new SandboxService(store.sandboxes, templates, rt, config, new SystemClock(), new RandomIdGenerator("sbxrestart_"), new WarmPools()) };
+  };
+  const first = new SqliteStore(path);
+  const run1 = await make(first);
+  let plainId = "";
+  let netId = "";
+  try {
+    plainId = (await run1.svc.create()).id;
+    netId = (await run1.svc.create({ allowHosts: ["pypi.org"] })).id;
+    await run1.svc.writeFile(plainId, "kept.txt", Buffer.from("still here"));
+    first.close(); // the first server stops; containers and the proxy keep running
+
+    const second = new SqliteStore(path);
+    const run2 = await make(second);
+    try {
+      assert.equal(run2.egress.reused, true, "the proxy container from the first run is kept");
+      const { adopted, lost } = await run2.svc.adopt();
+      assert.deepEqual({ adopted: adopted.sort(), lost }, { adopted: [netId, plainId].sort(), lost: [] });
+      assert.equal((await run2.svc.exec(plainId, { cmd: ["cat", "kept.txt"] })).stdout, "still here");
+      const net = await fetchStatus(run2.svc, netId, "https://pypi.org/simple/pip/");
+      assert.equal(net.stdout.trim(), "200", net.stderr);
+    } finally {
+      for (const s of run2.svc.list()) await run2.svc.destroy(s.id).catch(() => {});
+      second.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
