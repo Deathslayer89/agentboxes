@@ -229,3 +229,18 @@ print(urllib.request.urlopen(req, timeout=20).read().decode())`;
     await withSecret.destroy(box.id);
   }
 });
+
+test("S3: files in /workspace count as memory on top of memoryMb; past diskMb the write fails and the sandbox survives", async () => {
+  const box = await service.create({ memoryMb: 256, diskMb: 512 });
+  try {
+    const fits = await service.exec(box.id, { cmd: ["sh", "-c", "head -c 400M /dev/zero > big && ls -l big | awk '{print $5}'"], timeoutMs: 60_000 });
+    assert.equal(fits.exitCode, 0, fits.stderr);
+    assert.equal(fits.stdout.trim(), String(400 * 1024 * 1024));
+    const overflow = await service.exec(box.id, { cmd: ["sh", "-c", "head -c 200M /dev/zero > more"], timeoutMs: 60_000 });
+    assert.notEqual(overflow.exitCode, 0);
+    assert.match(overflow.stderr, /No space left/i);
+    assert.equal((await service.exec(box.id, { cmd: ["echo", "alive"] })).stdout.trim(), "alive");
+  } finally {
+    await service.destroy(box.id);
+  }
+});

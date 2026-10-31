@@ -7,7 +7,7 @@ export type SandboxStatus = "starting" | "ready" | "busy" | "expired" | "destroy
 export interface SandboxLimits {
   memoryMb: number;
   cpus: number;
-  // Size of the writable tmpfs mounted at /workspace.
+  // Size of the writable tmpfs mounted at /workspace. It is memory, and is added to the cgroup limit.
   diskMb: number;
   pids: number;
   ttlSeconds: number;

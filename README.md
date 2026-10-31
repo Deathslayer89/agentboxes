@@ -178,9 +178,9 @@ Installing packages at run time (`pip install` inside a sandbox) fails today bec
 |---|---|---|
 | Runtime | gVisor (`runsc`), not configurable | |
 | Network | none, or an allowlist through the egress proxy | |
-| Memory | 512 MB, no swap | `DEFAULT_MEMORY_MB`, `MAX_MEMORY_MB` |
+| Memory | 512 MB for processes, no swap | `DEFAULT_MEMORY_MB`, `MAX_MEMORY_MB` |
 | CPUs | 1 | `DEFAULT_CPUS`, `MAX_CPUS` |
-| `/workspace` tmpfs | 1024 MB | `DEFAULT_DISK_MB`, `MAX_DISK_MB` |
+| `/workspace` tmpfs | 1024 MB, memory-backed; the sandbox's hard memory cap is memory plus disk | `DEFAULT_DISK_MB`, `MAX_DISK_MB` |
 | Pids | 256 | `DEFAULT_PIDS`, `MAX_PIDS` |
 | TTL | 600 s | `DEFAULT_TTL_SECONDS`, `MAX_TTL_SECONDS` |
 | Exec timeout | 30 s | `DEFAULT_EXEC_TIMEOUT_MS`, `MAX_EXEC_TIMEOUT_MS` |
@@ -209,7 +209,7 @@ An idle sandbox holds about 16 MB of host memory with gVisor's sentry included, 
 - Not multi-node: one server, one Docker host, state in memory. A restart forgets sandboxes and removes their containers.
 - Not KVM-level isolation: gVisor is a user-space kernel that handles most syscalls itself, but the host kernel still serves the ones it forwards, and the sentry runs as a host process.
 - Not multi-tenant: one API key for everyone who can reach the server. Per-key limits are planned for v0.2.
-- Not ready for big workspaces: `/workspace` is memory-backed, so a large `node_modules` or repository counts against the sandbox's memory limit.
+- Not disk-backed: `/workspace` is a tmpfs, so a large `node_modules` or repository is held in RAM, up to `diskMb`. Writing past `diskMb` fails with "no space left", not an OOM kill.
 - Not a preview host: nothing inside a sandbox is reachable from outside, and nothing is persisted after the TTL.
 
 ## Tests

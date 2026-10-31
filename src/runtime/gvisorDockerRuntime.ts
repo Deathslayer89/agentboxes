@@ -117,8 +117,10 @@ export class GvisorDockerRuntime implements SandboxRuntime {
       HostConfig: {
         Runtime: RUNTIME, // S1: gVisor
         NetworkMode: attachment?.network ?? "none", // S2: no network, or only the sandbox's own network to the proxy
-        Memory: limits.memoryMb * MB, // S3: limits
-        MemorySwap: limits.memoryMb * MB, // equal to Memory means no swap
+        // Under gVisor the tmpfs at /workspace lives in the sandbox's memory, so the cgroup
+        // limit is processes plus files; the split between the two is not enforced.
+        Memory: (limits.memoryMb + limits.diskMb) * MB,
+        MemorySwap: (limits.memoryMb + limits.diskMb) * MB, // equal to Memory means no swap
         NanoCpus: Math.round(limits.cpus * 1e9),
         PidsLimit: limits.pids,
         ReadonlyRootfs: true, // S4: read-only root ...
