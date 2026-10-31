@@ -7,11 +7,18 @@ export class FakeRuntime implements SandboxRuntime {
   // handle -> what was started
   readonly containers = new Map<string, { sandboxId: string; limits: SandboxLimits; files: Map<string, Buffer> }>();
   readonly execCalls: Array<{ handle: string; cmd: string[]; timeoutMs: number }> = [];
+  // When set, the next start() throws this instead of starting a container.
+  startError: Error | undefined;
   private counter = 0;
 
   async init(): Promise<void> {}
 
   async start(sandboxId: string, limits: SandboxLimits): Promise<string> {
+    if (this.startError !== undefined) {
+      const error = this.startError;
+      this.startError = undefined;
+      throw error;
+    }
     this.counter += 1;
     const handle = `ctr-${this.counter}`;
     this.containers.set(handle, { sandboxId, limits, files: new Map() });

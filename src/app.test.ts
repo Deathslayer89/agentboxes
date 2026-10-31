@@ -7,10 +7,11 @@ import { CounterIdGenerator } from "./id.js";
 import { InMemorySandboxRepository } from "./repositories/sandboxRepository.js";
 import { FakeRuntime } from "./runtime/fakeRuntime.js";
 import { SandboxService } from "./services/sandboxService.js";
+import { WarmPool } from "./services/warmPool.js";
 
 // HTTP layer against the fake runtime: routes, status codes and auth, no Docker.
 function makeApp(options: AppOptions = {}, env: NodeJS.ProcessEnv = {}) {
-  const config = loadConfig(env);
+  const config = loadConfig({ POOL_SIZE: "0", ...env });
   const runtime = new FakeRuntime();
   const service = new SandboxService(
     new InMemorySandboxRepository(),
@@ -18,6 +19,7 @@ function makeApp(options: AppOptions = {}, env: NodeJS.ProcessEnv = {}) {
     config,
     new FakeClock(new Date("2026-01-01T00:00:00Z")),
     new CounterIdGenerator("sbx_"),
+    new WarmPool(runtime, config.defaults, config.poolSize),
   );
   return { app: createApp(service, options), service, runtime };
 }
@@ -116,4 +118,15 @@ test("exec/stream reports a failure after the stream began as an error event", a
   const [only] = parseSse(await res.text());
   assert.equal(only?.event, "error");
   assert.equal((only?.data as { error: string }).error, "ConflictError");
+});
+
+test("GET /stats reports live sandboxes and the pool", async () => {
+  const { app } = makeApp();
+  await app.request("/sandboxes", { method: "POST", body: "{}" });
+  assert.deepEqual(await (await app.request("/stats")).json(), {
+    sandboxes: { live: 1, max: 20 },
+    pool: { size: 0, ready: 0, starting: 0, hits: 0, misses: 1 },
+  });
+  const { app: locked } = makeApp({ apiKey: "k" });
+  assert.equal((await locked.request("/stats")).status, 401);
 });

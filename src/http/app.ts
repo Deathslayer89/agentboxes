@@ -10,8 +10,8 @@ import { parseCreateRequest, parseExecRequest } from "./validation.js";
 
 // The public shape of a sandbox: everything except runtime bookkeeping.
 function view(sandbox: Sandbox) {
-  const { id, status, limits, createdAt, expiresAt } = sandbox;
-  return { id, status, limits, createdAt, expiresAt };
+  const { id, status, limits, startup, createdAt, expiresAt } = sandbox;
+  return { id, status, limits, startup, createdAt, expiresAt };
 }
 
 // Maps the error classes the service throws to HTTP status codes.
@@ -52,7 +52,12 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
   // Open so load balancers and uptime checks can probe without the key.
   app.get("/health", (c) => c.json({ ok: true }));
 
-  if (options.apiKey !== undefined) app.use("/sandboxes/*", bearerAuth(options.apiKey));
+  if (options.apiKey !== undefined) {
+    app.use("/sandboxes/*", bearerAuth(options.apiKey));
+    app.use("/stats", bearerAuth(options.apiKey));
+  }
+
+  app.get("/stats", (c) => c.json(service.stats()));
 
   app.post("/sandboxes", async (c) => {
     const sandbox = await service.create(parseCreateRequest(await jsonBody(c)));

@@ -8,6 +8,7 @@ import { RandomIdGenerator } from "./id.js";
 import { InMemorySandboxRepository } from "./repositories/sandboxRepository.js";
 import { GvisorDockerRuntime } from "./runtime/gvisorDockerRuntime.js";
 import { SandboxService } from "./services/sandboxService.js";
+import { WarmPool } from "./services/warmPool.js";
 
 const config = loadConfig();
 const runtime = new GvisorDockerRuntime(new Docker(), config.image, config.maxOutputBytes, config.maxFileBytes);
@@ -23,17 +24,20 @@ try {
   throw e;
 }
 
+const pool = new WarmPool(runtime, config.defaults, config.poolSize);
 const service = new SandboxService(
   new InMemorySandboxRepository(),
   runtime,
   config,
   new SystemClock(),
   new RandomIdGenerator("sbx_"),
+  pool,
 );
 
-// Clean up containers left behind by a previous run before taking requests.
+// Clean up containers left behind by a previous run, then fill the pool, before taking requests.
 const leftovers = await service.reap();
 if (leftovers.orphans.length > 0) console.log(`agentbox: removed ${leftovers.orphans.length} orphaned container(s)`);
+console.log(`agentbox: warm pool has ${pool.stats().ready} of ${config.poolSize} containers ready`);
 
 const reaper = setInterval(() => {
   service
@@ -61,7 +65,7 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`agentbox: ${signal} received, destroying sandboxes`);
   clearInterval(reaper);
   server.close();
-  await Promise.all(service.list().map((s) => service.destroy(s.id).catch(() => {})));
+  await Promise.all([pool.drain(), ...service.list().map((s) => service.destroy(s.id).catch(() => {}))]);
   process.exit(0);
 }
 process.once("SIGINT", () => void shutdown("SIGINT"));

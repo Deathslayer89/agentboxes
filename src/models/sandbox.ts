@@ -13,10 +13,17 @@ export interface SandboxLimits {
   ttlSeconds: number;
 }
 
+// Where the container came from and how long create() took to make the sandbox ready.
+export interface Startup {
+  source: "pool" | "cold";
+  ms: number;
+}
+
 export interface Sandbox {
   id: string;
   status: SandboxStatus;
   limits: SandboxLimits;
+  startup: Startup;
   createdAt: Date;
   expiresAt: Date;
   /**

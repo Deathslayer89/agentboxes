@@ -12,10 +12,12 @@ import { RandomIdGenerator } from "../src/id.js";
 import { InMemorySandboxRepository } from "../src/repositories/sandboxRepository.js";
 import { GvisorDockerRuntime } from "../src/runtime/gvisorDockerRuntime.js";
 import { SandboxService } from "../src/services/sandboxService.js";
+import { WarmPool } from "../src/services/warmPool.js";
 
 const config = loadConfig({ ...process.env, DEFAULT_TTL_SECONDS: "120" });
 const runtime = new GvisorDockerRuntime(new Docker(), config.image, config.maxOutputBytes, config.maxFileBytes);
-const service = new SandboxService(new InMemorySandboxRepository(), runtime, config, new SystemClock(), new RandomIdGenerator("sbxtest_"));
+const pool = new WarmPool(runtime, config.defaults, 0);
+const service = new SandboxService(new InMemorySandboxRepository(), runtime, config, new SystemClock(), new RandomIdGenerator("sbxtest_"), pool);
 
 let id: string;
 
@@ -122,4 +124,27 @@ test("F6: output chunks arrive while the command is still running", async () => 
   assert.equal(r.stdout, "0\n1\n2\n");
   assert.ok(arrivals.length >= 3, `got ${arrivals.length} chunks`);
   assert.ok((arrivals[0] ?? Infinity) < r.durationMs / 2, `first chunk at ${arrivals[0]} ms, command took ${r.durationMs} ms`);
+});
+
+test("P1/P2: a sandbox from the warm pool is ready in well under 100 ms; a cold one takes longer", async () => {
+  const warm = new WarmPool(runtime, config.defaults, 2);
+  const pooled = new SandboxService(new InMemorySandboxRepository(), runtime, config, new SystemClock(), new RandomIdGenerator("sbxpool_"), warm);
+  await warm.fill();
+  try {
+    const a = await pooled.create();
+    const b = await pooled.create();
+    assert.equal(a.startup.source, "pool");
+    assert.equal(b.startup.source, "pool");
+    assert.ok(a.startup.ms < 100, `pool claim took ${a.startup.ms} ms`);
+    assert.equal((await pooled.exec(a.id, { cmd: ["python", "-c", "print(2+2)"] })).stdout.trim(), "4");
+    const cold = await pooled.create({ memoryMb: 256 });
+    assert.equal(cold.startup.source, "cold");
+    assert.ok(cold.startup.ms > a.startup.ms, `cold ${cold.startup.ms} ms vs pool ${a.startup.ms} ms`);
+    console.log(`pool claim ${a.startup.ms} ms, cold start ${cold.startup.ms} ms`);
+    await warm.fill();
+    assert.equal(warm.stats().ready, 2);
+    for (const s of pooled.list()) await pooled.destroy(s.id);
+  } finally {
+    await warm.drain();
+  }
 });

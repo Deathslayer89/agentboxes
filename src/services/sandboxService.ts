@@ -5,6 +5,7 @@ import type { IdGenerator } from "../id.js";
 import { isGone, type CreateSandboxRequest, type ExecRequest, type ExecResult, type Sandbox, type SandboxLimits } from "../models/sandbox.js";
 import type { SandboxRepository } from "../repositories/sandboxRepository.js";
 import type { OutputListener, SandboxRuntime } from "../runtime/sandboxRuntime.js";
+import type { WarmPool } from "./warmPool.js";
 import { resolveWorkspacePath } from "./workspacePath.js";
 
 /**
@@ -20,6 +21,7 @@ export class SandboxService {
     private readonly config: Config,
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
+    private readonly pool: WarmPool,
   ) {}
 
   async create(request: CreateSandboxRequest = {}): Promise<Sandbox> {
@@ -27,11 +29,13 @@ export class SandboxService {
     if (this.liveCount() >= this.config.maxSandboxes) {
       throw new LimitExceededError(`server limit of ${this.config.maxSandboxes} live sandboxes reached`);
     }
+    const startedAt = performance.now();
     const now = this.clock.now();
     const sandbox: Sandbox = {
       id: this.ids.next(),
       status: "starting",
       limits,
+      startup: { source: "cold", ms: 0 },
       createdAt: now,
       expiresAt: new Date(now.getTime() + limits.ttlSeconds * 1000),
       handle: undefined,
@@ -40,7 +44,13 @@ export class SandboxService {
     // Saved before the container exists so the reaper never mistakes it for an orphan.
     this.sandboxes.save(sandbox);
     try {
-      sandbox.handle = await this.runtime.start(sandbox.id, limits);
+      const pooled = this.poolable(limits) ? this.pool.claim() : undefined;
+      if (pooled !== undefined) {
+        sandbox.handle = pooled;
+        sandbox.startup.source = "pool";
+      } else {
+        sandbox.handle = await this.runtime.start(sandbox.id, limits);
+      }
     } catch (e) {
       this.sandboxes.delete(sandbox.id);
       throw e;
@@ -52,9 +62,14 @@ export class SandboxService {
       this.sandboxes.save(sandbox);
       throw new ConflictError(`sandbox ${sandbox.id} was ${sandbox.status} while starting`);
     }
+    sandbox.startup.ms = Math.round((performance.now() - startedAt) * 10) / 10;
     sandbox.status = "ready";
     this.sandboxes.save(sandbox);
     return sandbox;
+  }
+
+  stats(): { sandboxes: { live: number; max: number }; pool: ReturnType<WarmPool["stats"]> } {
+    return { sandboxes: { live: this.liveCount(), max: this.config.maxSandboxes }, pool: this.pool.stats() };
   }
 
   get(id: string): Sandbox {
@@ -135,13 +150,23 @@ export class SandboxService {
     }
 
     const orphans: string[] = [];
+    const liveHandles = new Set(this.sandboxes.findAll().filter((s) => !isGone(s)).map((s) => s.handle));
     for (const { sandboxId, handle } of await this.runtime.listManaged()) {
       const known = this.sandboxes.findById(sandboxId);
-      if (known !== undefined && !isGone(known)) continue;
+      if (known !== undefined && !isGone(known)) continue; // started for a sandbox that is live or still starting
+      if (liveHandles.has(handle)) continue; // claimed from the pool; its label still names the pool slot
+      if (this.pool.holds(sandboxId)) continue; // waiting in the pool, or starting for it
       await this.runtime.destroy(handle);
       orphans.push(sandboxId || handle);
     }
+    await this.pool.fill();
     return { expired, orphans };
+  }
+
+  // Only memory, cpus, disk and pids shape the container, so a custom TTL can still use the pool.
+  private poolable(limits: SandboxLimits): boolean {
+    const d = this.config.defaults;
+    return limits.memoryMb === d.memoryMb && limits.cpus === d.cpus && limits.diskMb === d.diskMb && limits.pids === d.pids;
   }
 
   private async remove(sandbox: Sandbox, finalStatus: "expired" | "destroyed"): Promise<void> {

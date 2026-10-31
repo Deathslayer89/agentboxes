@@ -87,7 +87,7 @@ export class GvisorDockerRuntime implements SandboxRuntime {
       Cmd: ["sleep", "infinity"],
       User: SANDBOX_USER,
       WorkingDir: WORKSPACE,
-      Hostname: sandboxId,
+      Hostname: "sandbox",
       Env: [
         `HOME=${WORKSPACE}`, // pip and similar tools write their caches under the writable workspace
         "PYTHONUNBUFFERED=1", // python output arrives line by line instead of at exit

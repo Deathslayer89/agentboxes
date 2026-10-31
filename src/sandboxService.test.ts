@@ -7,14 +7,16 @@ import { CounterIdGenerator } from "./id.js";
 import { InMemorySandboxRepository } from "./repositories/sandboxRepository.js";
 import { FakeRuntime } from "./runtime/fakeRuntime.js";
 import { SandboxService } from "./services/sandboxService.js";
+import { WarmPool } from "./services/warmPool.js";
 
-// Fresh service per test so tests never depend on each other.
+// Fresh service per test so tests never depend on each other. The pool is off unless a test asks for it.
 function makeService(env: NodeJS.ProcessEnv = {}) {
-  const config = loadConfig(env);
+  const config = loadConfig({ POOL_SIZE: "0", ...env });
   const clock = new FakeClock(new Date("2026-01-01T00:00:00Z"));
   const runtime = new FakeRuntime();
-  const service = new SandboxService(new InMemorySandboxRepository(), runtime, config, clock, new CounterIdGenerator("sbx_"));
-  return { service, runtime, clock, config };
+  const pool = new WarmPool(runtime, config.defaults, config.poolSize);
+  const service = new SandboxService(new InMemorySandboxRepository(), runtime, config, clock, new CounterIdGenerator("sbx_"), pool);
+  return { service, runtime, clock, config, pool };
 }
 
 test("create starts a container with the server defaults and a TTL", async () => {
@@ -103,4 +105,29 @@ test("files are written and read back under /workspace; bad paths and big files 
   await assert.rejects(service.writeFile(id, "big.bin", Buffer.alloc(11)), ValidationError);
   await assert.rejects(service.readFile(id, "missing.py"), NotFoundError);
   assert.equal(service.get(id).status, "ready");
+});
+
+test("create takes a container from the pool when the shape matches the defaults, otherwise starts cold", async () => {
+  const { service, runtime, pool } = makeService({ POOL_SIZE: "1" });
+  await pool.fill();
+  const pooled = await service.create({ ttlSeconds: 60 }); // a custom TTL does not change the container
+  assert.equal(pooled.startup.source, "pool");
+  assert.equal(pooled.handle, "ctr-1");
+  const cold = await service.create({ memoryMb: 256 });
+  assert.equal(cold.startup.source, "cold");
+  assert.equal(runtime.containers.get(cold.handle ?? "")?.limits.memoryMb, 256);
+  await pool.fill();
+  assert.deepEqual(service.stats(), { sandboxes: { live: 2, max: 20 }, pool: { size: 1, ready: 1, starting: 0, hits: 1, misses: 0 } });
+});
+
+test("the reaper leaves pool containers and claimed pool containers alone", async () => {
+  const { service, runtime, pool } = makeService({ POOL_SIZE: "1" });
+  await pool.fill();
+  const claimed = await service.create();
+  await runtime.start("sbx_orphan", claimed.limits);
+  const { orphans } = await service.reap();
+  assert.deepEqual(orphans, ["sbx_orphan"]);
+  assert.equal(service.get(claimed.id).status, "ready");
+  assert.equal(pool.stats().ready, 1);
+  assert.equal(runtime.containers.size, 2);
 });

@@ -18,8 +18,10 @@ export interface Config {
   maxOutputBytes: number;
   // Largest file the files API will write or read.
   maxFileBytes: number;
-  // Cap on live sandboxes across all callers.
+  // Cap on live sandboxes across all callers. Containers waiting in the warm pool do not count.
   maxSandboxes: number;
+  // How many default-sized containers to keep started ahead of time. 0 turns the pool off.
+  poolSize: number;
   reaperIntervalMs: number;
 }
 
@@ -33,6 +35,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   };
 
   const apiKey = env.AGENTBOX_API_KEY || undefined;
+  const count = (name: string, fallback: number): number => {
+    const raw = env[name];
+    if (raw === undefined || raw === "") return fallback;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 0) throw new Error(`${name} must be a whole number of 0 or more, got "${raw}"`);
+    return value;
+  };
+
   const config: Config = {
     port: num("PORT", 7788),
     host: apiKey === undefined ? "127.0.0.1" : env.HOST || "0.0.0.0",
@@ -57,6 +67,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxOutputBytes: num("MAX_OUTPUT_BYTES", 1_048_576),
     maxFileBytes: num("MAX_FILE_BYTES", 8 * 1_048_576),
     maxSandboxes: num("MAX_SANDBOXES", 20),
+    poolSize: count("POOL_SIZE", 3),
     reaperIntervalMs: num("REAPER_INTERVAL_MS", 10_000),
   };
 

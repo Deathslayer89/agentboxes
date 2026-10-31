@@ -2,7 +2,7 @@
 
 Self-hosted sandboxes for AI agents. Runs on any Linux box with Docker and gVisor; no KVM needed.
 
-Status: v0.1 in progress. Create, exec, destroy, TTL reaper, files and the API key are here. Warm pool, streaming, templates, SDK and the egress proxy come next.
+Status: v0.1 in progress. Create, exec, streaming exec, files, warm pool, TTL reaper and the API key are here. Templates, the SDK and the egress proxy come next.
 
 ## Requirements
 
@@ -37,11 +37,18 @@ AGENTBOX_API_KEY=$(openssl rand -hex 16) npm start
 ```bash
 # create a sandbox (all fields optional: memoryMb, cpus, diskMb, pids, ttlSeconds)
 curl -s -X POST localhost:7788/sandboxes -d '{}'
-# {"id":"sbx_...","status":"ready","limits":{...},"createdAt":"...","expiresAt":"..."}
+# {"id":"sbx_...","status":"ready","limits":{...},"startup":{"source":"pool","ms":0.3},"createdAt":"...","expiresAt":"..."}
 
 # run a command
 curl -s -X POST localhost:7788/sandboxes/sbx_.../exec -d '{"cmd":["python","-c","print(2+2)"],"timeoutMs":5000}'
 # {"exitCode":0,"stdout":"4\n","stderr":"","durationMs":...,"timedOut":false,"truncated":false}
+
+# same body, but stdout and stderr arrive as Server-Sent Events while the command runs, then an exit event
+curl -s -N -X POST localhost:7788/sandboxes/sbx_.../exec/stream -d '{"cmd":["python","-c","import time\nfor i in range(3): print(i); time.sleep(1)"]}'
+# event: stdout        data: "0\n"
+# event: stdout        data: "1\n"
+# event: stdout        data: "2\n"
+# event: exit          data: {"exitCode":0,"durationMs":3045,"timedOut":false,"truncated":false}
 
 # files live under /workspace; relative paths start there, ".." that leaves it is a 400
 curl -s -X PUT --data-binary @main.py "localhost:7788/sandboxes/sbx_.../files?path=main.py"
@@ -54,6 +61,10 @@ curl -s -X DELETE localhost:7788/sandboxes/sbx_...
 ```
 
 Sandboxes expire after `ttlSeconds` (default 600, max 3600). A reaper removes expired ones and any container labelled `agentbox=1` that the server does not know about.
+
+## Warm pool
+
+The server keeps `POOL_SIZE` (default 3) default-sized containers started ahead of time. A create request whose memory, cpus, disk and pids match the defaults takes one of them; `startup.source` says `pool` and `startup.ms` is the server-side time to ready. Any other size starts a fresh container (`cold`), which takes Docker plus gVisor start time. Each pooled container is used once and destroyed with its sandbox; a background loop refills the pool. Pool containers do not count towards `MAX_SANDBOXES`. `GET /stats` shows pool size, ready, starting, hits and misses.
 
 ## What every sandbox gets
 
@@ -71,7 +82,7 @@ Sandboxes expire after `ttlSeconds` (default 600, max 3600). A reaper removes ex
 | User | `nobody` (65534), `--cap-drop=ALL`, `no-new-privileges` | |
 | Host mounts, docker socket, host env | none | |
 
-Other settings: `PORT` (7788), `HOST`, `AGENTBOX_API_KEY`, `AGENTBOX_IMAGE` (`python:3.12-slim`), `MAX_SANDBOXES` (20), `MAX_OUTPUT_BYTES` per stream per exec (1 MiB, output past it is dropped and `truncated` is true), `MAX_FILE_BYTES` (8 MiB), `REAPER_INTERVAL_MS` (10000).
+Other settings: `PORT` (7788), `HOST`, `AGENTBOX_API_KEY`, `AGENTBOX_IMAGE` (`python:3.12-slim`), `MAX_SANDBOXES` (20), `MAX_OUTPUT_BYTES` per stream per exec (1 MiB, output past it is dropped and `truncated` is true), `MAX_FILE_BYTES` (8 MiB), `POOL_SIZE` (3), `REAPER_INTERVAL_MS` (10000).
 
 ## Tests
 
