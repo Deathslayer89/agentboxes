@@ -10,6 +10,7 @@ import { RandomIdGenerator } from "./id.js";
 import { DEFAULT_TEMPLATE } from "./models/template.js";
 import { SqliteStore } from "./repositories/sqliteStore.js";
 import { EgressProxyManager } from "./runtime/egressProxy.js";
+import { FirecrackerRuntime } from "./runtime/firecrackerRuntime.js";
 import { DockerTemplateRepository } from "./repositories/templateRepository.js";
 import { GvisorDockerRuntime } from "./runtime/gvisorDockerRuntime.js";
 import { SandboxService } from "./services/sandboxService.js";
@@ -18,7 +19,10 @@ import { WarmPool, WarmPools } from "./services/warmPool.js";
 const config = loadConfig();
 const docker = new Docker();
 const store = new SqliteStore(config.dbPath);
-const runtime = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker, store.settings));
+const runtime =
+  config.runtime === "firecracker"
+    ? new FirecrackerRuntime(dirname(config.dbPath), config.defaults, config.maxOutputBytes)
+    : new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker, store.settings));
 const templates = new DockerTemplateRepository(docker);
 
 // Refuse to start without gVisor instead of silently running on runc.

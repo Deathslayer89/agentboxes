@@ -2,7 +2,7 @@
 
 Self-hosted sandboxes for AI agents. Runs on any Linux box with Docker and gVisor; no KVM needed.
 
-Status: v0.1. Everything below works and has a test or a benchmark behind it.
+Status: v0.2 in progress. Everything below works and has a test or a benchmark behind it.
 
 ## Requirements
 
@@ -221,6 +221,27 @@ Installing packages at run time needs the network allowlist above, for example `
 
 Other settings: `PORT` (7788), `HOST`, `AGENTBOX_API_KEY`, `AGENTBOX_IMAGE` (`python:3.12-slim`), `MAX_SANDBOXES` (20), `MAX_OUTPUT_BYTES` per stream per exec (1 MiB, output past it is dropped and `truncated` is true), `MAX_FILE_BYTES` (8 MiB), `MAX_ARCHIVE_BYTES` (256 MiB), `POOL_SIZES` (`default:3`), `REAPER_INTERVAL_MS` (10000).
 
+### Firecracker runtime (optional, KVM hosts)
+
+On a host with `/dev/kvm`, agentbox can run each sandbox as a Firecracker microVM instead of a gVisor container: a real guest kernel per sandbox, so a kernel bug inside a sandbox stays inside that VM. Same API, SDKs and MCP server; a second `SandboxRuntime` implementation. Setup needs no sudo and takes about a minute:
+
+```bash
+./firecracker/setup.sh           # downloads Firecracker and a prebuilt guest kernel, builds a rootfs image from python:3.12-slim
+AGENTBOX_RUNTIME=firecracker npm start
+```
+
+The first start boots one VM to the guest agent's ready state and snapshots it (about 2 s). Every default-sized sandbox after that is restored from the snapshot in about 32 ms and seeded with fresh entropy; a custom size boots cold in about 620 ms. `/workspace` is a tmpfs inside the VM and the root filesystem is read-only, so VMs share one image. Commands and files travel over the VM's serial console, which is fine for commands and small files and slow for large transfers. Not supported on this runtime yet: templates, the network allowlist and secrets, live streaming of output (it arrives when the command ends), and adopting VMs after a server restart. The Firecracker jailer is not used. `npm run test:firecracker` runs its tests.
+
+Measured on this machine through the HTTP API, median unless noted:
+
+| | gVisor (`runsc-kvm`) | Firecracker |
+|---|---|---|
+| create from warm pool, p50 / p95 | 1.0 / 1.6 ms | 1.1 / 12.3 ms |
+| create cold | 150 ms | 644 ms (kernel boot) |
+| create from snapshot, no pool | not applicable | 32 ms |
+| exec `print(2+2)` | 29 ms | 13 ms (one serial round trip instead of three Docker API calls) |
+| idle sandbox host memory | 16 MB | 79 MB |
+
 ### gVisor's KVM platform
 
 By default runsc uses the systrap platform, which works everywhere. On a machine with `/dev/kvm`, the KVM platform runs gVisor's kernel as a guest and cuts syscall overhead. Register it as a second runtime (needs sudo); agentbox uses it automatically when it is there:
@@ -259,7 +280,7 @@ Why `/workspace` is a tmpfs and not a disk volume: one Python process writing an
 ## What this is not
 
 - Not multi-node: one server per Docker host. Records are in SQLite and a server restart adopts running sandboxes, but a Docker restart loses the egress proxy's state.
-- Not KVM-level isolation: gVisor is a user-space kernel that handles most syscalls itself, but the host kernel still serves the ones it forwards, and the sentry runs as a host process.
+- Not KVM-level isolation by default: gVisor is a user-space kernel that handles most syscalls itself, but the host kernel still serves the ones it forwards, and the sentry runs as a host process. The Firecracker runtime gives each sandbox its own kernel, at the cost of the features it does not support yet.
 - Not multi-tenant beyond API keys: keys partition sandboxes and carry limits, but they share one proxy, one pool and one Docker host.
 - Not disk-backed: `/workspace` is a tmpfs, so a large `node_modules` or repository is held in RAM, up to `diskMb`. Writing past `diskMb` fails with "no space left", not an OOM kill.
 - Not a preview host: nothing inside a sandbox is reachable from outside, and nothing is persisted after the TTL.
@@ -269,6 +290,8 @@ Why `/workspace` is a tmpfs and not a disk volume: one Python process writing an
 ```bash
 npm test                  # unit tests under test/unit, no Docker needed
 npm run test:integration  # test/integration: needs Docker, runsc and internet; checks each isolation default from inside a sandbox
+npm run test:firecracker  # needs ./firecracker/setup.sh and /dev/kvm; skipped otherwise
+npm run test:python       # the Python client against the fake server
 ```
 
 Tests live in `test/unit/<area>/` mirroring `src/`, plus `test/unit/proxy` and `test/unit/sdk`, and in `test/integration/`. Do not run the integration tests while a server is running on the same Docker: both own the proxy container and the reaper would remove each other's containers. Like the server, the suite leaves the `agentbox-egress-proxy` container running for the next start to reuse.
@@ -278,11 +301,12 @@ Tests live in `test/unit/<area>/` mirroring `src/`, plus `test/unit/proxy` and `
 ```
 src/models/        sandbox and template records, request/response types
 src/repositories/  where records live: sandboxes and settings in SQLite, templates as labelled Docker images
-src/runtime/       SandboxRuntime interface and the gVisor-on-Docker implementation
+src/runtime/       SandboxRuntime interface, the gVisor-on-Docker implementation and the Firecracker one
 src/services/      SandboxService (create, exec, files, destroy, reap) and the warm pools
 src/http/          routes, auth and request parsing
 src/cli.ts         `agentbox template build | list`
 proxy/             the egress proxy (plain Node, no dependencies) and its Dockerfile
+firecracker/       setup script and the guest agent for the Firecracker runtime
 sdk/               the TypeScript client
 sdk-python/        the Python client
 mcp/               the MCP server, built on the client

@@ -27,6 +27,7 @@ test("AGENTBOX_RUNTIME accepts runsc variants only, and defaults to auto", () =>
   assert.equal(loadConfig({}).runtime, "auto");
   assert.equal(loadConfig({ AGENTBOX_RUNTIME: "runsc" }).runtime, "runsc");
   assert.equal(loadConfig({ AGENTBOX_RUNTIME: "runsc-kvm" }).runtime, "runsc-kvm");
+  assert.equal(loadConfig({ AGENTBOX_RUNTIME: "firecracker" }).runtime, "firecracker");
   assert.throws(() => loadConfig({ AGENTBOX_RUNTIME: "runc" }), /runsc/);
 });
 

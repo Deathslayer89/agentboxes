@@ -10,7 +10,7 @@ export interface Config {
   apiKeys: ApiKey[];
   // Image every sandbox starts from. Templates build FROM this.
   image: string;
-  // Docker runtime name: "auto" picks runsc-kvm when it is registered and runsc otherwise. Never runc.
+  // "auto" picks runsc-kvm when registered and runsc otherwise; "firecracker" uses microVMs on a KVM host. Never runc.
   runtime: string;
   // Limits a sandbox gets when the request does not say otherwise.
   defaults: SandboxLimits;
@@ -81,8 +81,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dbPath: env.AGENTBOX_DB || "data/agentbox.db",
   };
 
-  if (config.runtime !== "auto" && !/^runsc(-[a-z0-9]+)?$/.test(config.runtime)) {
-    throw new Error(`AGENTBOX_RUNTIME must be auto, runsc or a runsc variant such as runsc-kvm, got "${config.runtime}"`);
+  if (config.runtime !== "auto" && config.runtime !== "firecracker" && !/^runsc(-[a-z0-9]+)?$/.test(config.runtime)) {
+    throw new Error(`AGENTBOX_RUNTIME must be auto, firecracker, runsc or a runsc variant such as runsc-kvm, got "${config.runtime}"`);
   }
   // A default above its maximum would make every plain create() fail; catch that at boot.
   for (const key of Object.keys(config.maximums) as (keyof SandboxLimits)[]) {

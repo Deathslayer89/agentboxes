@@ -61,14 +61,20 @@ for (let i = 0; i < EXECS; i++) {
 }
 await box.destroy();
 
-// Host memory held by idle sandboxes, from each container's cgroup, which under gVisor includes the sentry.
+// Host memory held by idle sandboxes: each container's cgroup under gVisor (sentry included), or the
+// resident memory of each firecracker process when the server runs microVMs.
 const idle = [];
 for (let i = 0; i < IDLE; i++) idle.push(await agentbox.create({ memoryMb: 256 }));
 await new Promise((resolve) => setTimeout(resolve, 2000));
 let usedBytes = 0;
-for (const c of await docker.listContainers({ filters: { label: ["agentbox=1"] } })) {
+const containers = await docker.listContainers({ filters: { label: ["agentbox=1"] } });
+for (const c of containers) {
   const stats = (await docker.getContainer(c.Id).stats({ stream: false })) as { memory_stats?: { usage?: number } };
   usedBytes += stats.memory_stats?.usage ?? 0;
+}
+if (containers.length === 0) {
+  const rss = execFileSync("sh", ["-c", "ps -o rss= -C firecracker | awk '{s+=$1} END {print s+0}'"]).toString().trim();
+  usedBytes = Number(rss) * 1024;
 }
 const perSandboxMb = usedBytes / idle.length / 1024 / 1024;
 for (const b of idle) await b.destroy();
@@ -90,4 +96,4 @@ console.log(row("create from warm pool", claims));
 console.log(row("create cold (no pool)", colds));
 console.log(row("exec `print(2+2)`", execs));
 console.log();
-console.log(`Idle sandbox memory on the host: ${perSandboxMb.toFixed(0)} MB each, about ${Math.floor(1024 / perSandboxMb)} sandboxes per GB of RAM (includes gVisor's sentry; the pool holds a few more).`);
+console.log(`Idle sandbox memory on the host: ${perSandboxMb.toFixed(0)} MB each, about ${Math.floor(1024 / perSandboxMb)} sandboxes per GB of RAM (${containers.length === 0 ? "firecracker process memory" : "includes gVisor's sentry"}; the pool holds a few more).`);

@@ -15,8 +15,9 @@
     "bench": "tsx bench/run.ts",
     "build:sdk": "tsc -p sdk/tsconfig.json",
     "test": "tsx --test test/unit/*/*.test.ts",
-    "test:integration": "tsx --test test/integration/*.test.ts",
-    "test:python": "python3 -m unittest discover -s sdk-python/tests -v"
+    "test:integration": "tsx --test test/integration/sandbox.test.ts",
+    "test:python": "python3 -m unittest discover -s sdk-python/tests -v",
+    "test:firecracker": "tsx --test test/integration/firecracker.test.ts"
   },
   "license": "MIT",
   "dependencies": {
