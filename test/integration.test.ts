@@ -12,7 +12,7 @@ import { GvisorDockerRuntime } from "../src/runtime/gvisorDockerRuntime.js";
 import { SandboxService } from "../src/services/sandboxService.js";
 
 const config = loadConfig({ ...process.env, DEFAULT_TTL_SECONDS: "120" });
-const runtime = new GvisorDockerRuntime(new Docker(), config.image, config.maxOutputBytes);
+const runtime = new GvisorDockerRuntime(new Docker(), config.image, config.maxOutputBytes, config.maxFileBytes);
 const service = new SandboxService(new InMemorySandboxRepository(), runtime, config, new SystemClock(), new RandomIdGenerator("sbxtest_"));
 
 let id: string;
@@ -90,4 +90,21 @@ test("F5: a container the server does not know about is removed by the reaper", 
   assert.ok(orphans.includes("sbxtest_orphan"));
   const still = (await runtime.listManaged()).some((c) => c.handle === orphan);
   assert.equal(still, false);
+});
+
+test("F7: a file written through the API is there for the next exec, and comes back byte for byte", async () => {
+  const bytes = Buffer.concat([Buffer.from("print('from file')\n"), Buffer.from([0, 255, 254])]);
+  await service.writeFile(id, "nested/dir/main.py", bytes);
+  assert.deepEqual(await service.readFile(id, "nested/dir/main.py"), bytes);
+  const r = await run(["head", "-c", "19", "nested/dir/main.py"]);
+  assert.equal(r.stdout, "print('from file')\n");
+  await assert.rejects(service.readFile(id, "nested/dir/missing.py"));
+});
+
+test("F7: a file bigger than MAX_FILE_BYTES is refused on read, and exec output over the cap is flagged", async () => {
+  await run(["sh", "-c", `head -c ${config.maxFileBytes + 1} /dev/zero > big.bin`]);
+  await assert.rejects(service.readFile(id, "big.bin"), /larger than/);
+  const r = await run(["sh", "-c", `head -c ${config.maxOutputBytes + 1} /dev/zero`]);
+  assert.equal(r.truncated, true);
+  assert.equal(r.stdout.length, config.maxOutputBytes);
 });

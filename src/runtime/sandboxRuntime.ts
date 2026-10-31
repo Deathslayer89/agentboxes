@@ -1,5 +1,8 @@
 import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
 
+// Receives output chunks as they arrive, before the command finishes.
+export type OutputListener = (stream: "stdout" | "stderr", chunk: Buffer) => void;
+
 // What the service needs from an isolation backend. gVisor on Docker is the only
 // implementation in v0.1; Firecracker can be added later behind the same interface.
 export interface SandboxRuntime {
@@ -11,7 +14,15 @@ export interface SandboxRuntime {
   start(sandboxId: string, limits: SandboxLimits): Promise<string>;
 
   // Run one command inside the sandbox and wait for it. Must kill it at timeoutMs.
-  exec(handle: string, cmd: string[], timeoutMs: number): Promise<ExecResult>;
+  // When onOutput is given, every chunk is passed to it as soon as it arrives.
+  exec(handle: string, cmd: string[], timeoutMs: number, onOutput?: OutputListener): Promise<ExecResult>;
+
+  // Write a file inside the sandbox, creating parent directories. `path` is absolute
+  // and already checked to be under /workspace by the service.
+  writeFile(handle: string, path: string, data: Buffer): Promise<void>;
+
+  // Read a file from inside the sandbox. Throws NotFoundError if it does not exist.
+  readFile(handle: string, path: string): Promise<Buffer>;
 
   // Stop and remove the container. Must not fail if it is already gone.
   destroy(handle: string): Promise<void>;

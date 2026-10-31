@@ -38,6 +38,8 @@ export interface ExecResult {
   durationMs: number;
   // True when the per-exec timeout killed the command.
   timedOut: boolean;
+  // True when stdout or stderr went over MAX_OUTPUT_BYTES and was cut.
+  truncated: boolean;
 }
 
 // "expired" and "destroyed" both mean the container has been removed; they only

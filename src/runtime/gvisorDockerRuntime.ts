@@ -1,8 +1,8 @@
 import Docker from "dockerode";
 import { Writable } from "node:stream";
-import { ConflictError, RuntimeUnavailableError } from "../errors.js";
+import { ConflictError, NotFoundError, RuntimeUnavailableError, ValidationError } from "../errors.js";
 import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
-import type { SandboxRuntime } from "./sandboxRuntime.js";
+import type { OutputListener, SandboxRuntime } from "./sandboxRuntime.js";
 
 // Docker runtime name for gVisor. Deliberately not configurable: S1 says never fall back to runc.
 const RUNTIME = "runsc";
@@ -17,13 +17,34 @@ const LABEL_ID = "agentbox.id";
 // If the in-sandbox `timeout` has not ended the exec this long after its deadline,
 // kill the whole container.
 const GUARD_MS = 5_000;
+// File reads and writes are plain `cat`; this only matters if the path is a FIFO.
+const FILE_TIMEOUT_MS = 30_000;
 const MB = 1024 * 1024;
+
+interface RunOptions {
+  // Bytes to feed the command on stdin; stdin is closed right after.
+  stdin?: Buffer;
+  // Called with each chunk as it arrives (F6 streaming).
+  onOutput?: OutputListener;
+  // Cap per stream on what is kept in memory. Defaults to maxOutputBytes.
+  limit?: number;
+}
+
+interface RunResult {
+  exitCode: number;
+  stdout: Buffer;
+  stderr: Buffer;
+  durationMs: number;
+  // True when stdout or stderr went over the limit and was cut.
+  truncated: boolean;
+}
 
 export class GvisorDockerRuntime implements SandboxRuntime {
   constructor(
     private readonly docker: Docker,
     private readonly image: string,
     private readonly maxOutputBytes: number,
+    private readonly maxFileBytes: number,
   ) {}
 
   async init(): Promise<void> {
@@ -94,22 +115,68 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     return container.id;
   }
 
-  async exec(handle: string, cmd: string[], timeoutMs: number): Promise<ExecResult> {
-    const container = this.docker.getContainer(handle);
+  async exec(handle: string, cmd: string[], timeoutMs: number, onOutput?: OutputListener): Promise<ExecResult> {
+    const r = await this.run(handle, cmd, timeoutMs, onOutput === undefined ? {} : { onOutput });
+    return {
+      exitCode: r.exitCode,
+      stdout: r.stdout.toString("utf8"),
+      stderr: r.stderr.toString("utf8"),
+      durationMs: r.durationMs,
+      timedOut: r.exitCode === 137 && r.durationMs >= timeoutMs,
+      truncated: r.truncated,
+    };
+  }
+
+  // `docker cp` cannot see /workspace: under gVisor the tmpfs lives inside the sandbox,
+  // not on the host. So files travel through exec, on stdin for writes and stdout for reads.
+  async writeFile(handle: string, path: string, data: Buffer): Promise<void> {
+    const script = 'mkdir -p "$(dirname -- "$1")" && cat > "$1"';
+    const r = await this.run(handle, ["sh", "-c", script, "sh", path], FILE_TIMEOUT_MS, { stdin: data });
+    if (r.exitCode !== 0) throw new ValidationError(`cannot write ${path}: ${r.stderr.toString("utf8").trim()}`);
+  }
+
+  async readFile(handle: string, path: string): Promise<Buffer> {
+    const r = await this.run(handle, ["cat", "--", path], FILE_TIMEOUT_MS, { limit: this.maxFileBytes });
+    if (r.exitCode !== 0) throw new NotFoundError(`cannot read ${path}: ${r.stderr.toString("utf8").trim()}`);
+    if (r.truncated) throw new ValidationError(`${path} is larger than the ${this.maxFileBytes} byte limit`);
+    return r.stdout;
+  }
+
+  async destroy(handle: string): Promise<void> {
     try {
-      // coreutils `timeout` runs inside the sandbox and kills the command's whole
-      // process group at the deadline. Exit code 137 means killed by SIGKILL.
+      await this.docker.getContainer(handle).remove({ force: true, v: true });
+    } catch (e) {
+      if (!isNotFound(e)) throw e;
+    }
+  }
+
+  async listManaged(): Promise<Array<{ sandboxId: string; handle: string }>> {
+    const containers = await this.docker.listContainers({ all: true, filters: { label: [`${LABEL}=1`] } });
+    return containers.map((c) => ({ sandboxId: c.Labels[LABEL_ID] ?? "", handle: c.Id }));
+  }
+
+  // Runs one command inside the container under coreutils `timeout`, which kills the
+  // command's whole process group at the deadline (exit code 137 = killed by SIGKILL).
+  private async run(handle: string, cmd: string[], timeoutMs: number, options: RunOptions): Promise<RunResult> {
+    const container = this.docker.getContainer(handle);
+    const limit = options.limit ?? this.maxOutputBytes;
+    try {
       const exec = await container.exec({
         Cmd: ["timeout", "-s", "KILL", String(timeoutMs / 1000), ...cmd],
+        AttachStdin: options.stdin !== undefined,
         AttachStdout: true,
         AttachStderr: true,
         WorkingDir: WORKSPACE,
       });
-      const stdout = new OutputBuffer(this.maxOutputBytes);
-      const stderr = new OutputBuffer(this.maxOutputBytes);
+      const stdout = new OutputBuffer(limit, (chunk) => options.onOutput?.("stdout", chunk));
+      const stderr = new OutputBuffer(limit, (chunk) => options.onOutput?.("stderr", chunk));
       const startedAt = Date.now();
-      const stream = await exec.start({ Detach: false, Tty: false });
+      // hijack gives us the raw socket so we can write stdin and then half-close it.
+      const stream = await exec.start(
+        options.stdin === undefined ? { Detach: false, Tty: false } : { Detach: false, Tty: false, hijack: true, stdin: true },
+      );
       this.docker.modem.demuxStream(stream, stdout, stderr);
+      if (options.stdin !== undefined) stream.end(options.stdin);
 
       // Backstop for a process that keeps the output pipe open past the deadline
       // (for example a daemonised grandchild). The sandbox is lost in that case.
@@ -129,55 +196,47 @@ export class GvisorDockerRuntime implements SandboxRuntime {
 
       const durationMs = Date.now() - startedAt;
       const { ExitCode } = await exec.inspect();
-      // ExitCode is null when the container died under us; report that as killed.
-      const exitCode = ExitCode ?? 137;
       return {
-        exitCode,
-        stdout: stdout.text(),
-        stderr: stderr.text(),
+        // ExitCode is null when the container died under us; report that as killed.
+        exitCode: ExitCode ?? 137,
+        stdout: stdout.bytes(),
+        stderr: stderr.bytes(),
         durationMs,
-        timedOut: exitCode === 137 && durationMs >= timeoutMs,
+        truncated: stdout.truncated || stderr.truncated,
       };
     } catch (e) {
       throw translateDockerError(e);
     }
   }
-
-  async destroy(handle: string): Promise<void> {
-    try {
-      await this.docker.getContainer(handle).remove({ force: true, v: true });
-    } catch (e) {
-      if (!isNotFound(e)) throw e;
-    }
-  }
-
-  async listManaged(): Promise<Array<{ sandboxId: string; handle: string }>> {
-    const containers = await this.docker.listContainers({ all: true, filters: { label: [`${LABEL}=1`] } });
-    return containers.map((c) => ({ sandboxId: c.Labels[LABEL_ID] ?? "", handle: c.Id }));
-  }
 }
 
 // Keeps at most `limit` bytes; the rest is dropped so one noisy command cannot
-// exhaust the server's memory.
+// exhaust the server's memory. Every chunk still reaches the listener in full.
 class OutputBuffer extends Writable {
   private readonly chunks: Buffer[] = [];
   private size = 0;
+  truncated = false;
 
-  constructor(private readonly limit: number) {
+  constructor(
+    private readonly limit: number,
+    private readonly onChunk: (chunk: Buffer) => void,
+  ) {
     super();
   }
 
   override _write(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
-    if (this.size < this.limit) {
-      const keep = chunk.subarray(0, this.limit - this.size);
+    this.onChunk(chunk);
+    const keep = chunk.subarray(0, Math.max(0, this.limit - this.size));
+    if (keep.length < chunk.length) this.truncated = true;
+    if (keep.length > 0) {
       this.chunks.push(keep);
       this.size += keep.length;
     }
     callback();
   }
 
-  text(): string {
-    return Buffer.concat(this.chunks).toString("utf8");
+  bytes(): Buffer {
+    return Buffer.concat(this.chunks);
   }
 }
 

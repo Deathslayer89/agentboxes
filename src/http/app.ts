@@ -68,5 +68,18 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
 
   app.delete("/sandboxes/:id", async (c) => c.json(view(await service.destroy(c.req.param("id")))));
 
+  // F7: raw bytes in and out, the path in the query string so the body stays unencoded.
+  app.put("/sandboxes/:id/files", async (c) => {
+    const data = Buffer.from(await c.req.arrayBuffer());
+    const path = await service.writeFile(c.req.param("id"), c.req.query("path"), data);
+    return c.json({ path, bytes: data.length });
+  });
+
+  app.get("/sandboxes/:id/files", async (c) => {
+    const data = await service.readFile(c.req.param("id"), c.req.query("path"));
+    // Hono wants a plain Uint8Array; a Node Buffer does not satisfy its type.
+    return c.body(new Uint8Array(data), 200, { "content-type": "application/octet-stream" });
+  });
+
   return app;
 }

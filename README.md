@@ -2,7 +2,7 @@
 
 Self-hosted sandboxes for AI agents. Runs on any Linux box with Docker and gVisor; no KVM needed.
 
-Status: v0.1 in progress. Day 1 (create, exec, destroy, TTL reaper) is here. Warm pool, streaming, files, SDK and the egress proxy come next.
+Status: v0.1 in progress. Create, exec, destroy, TTL reaper, files and the API key are here. Warm pool, streaming, templates, SDK and the egress proxy come next.
 
 ## Requirements
 
@@ -25,7 +25,13 @@ docker run --rm --runtime=runsc alpine uname -a   # kernel line ends in -gvisor:
 
 ```bash
 npm install
-npm start          # listens on http://localhost:7788, pulls python:3.12-slim on first run
+npm start          # listens on http://127.0.0.1:7788, pulls python:3.12-slim on first run
+```
+
+Without `AGENTBOX_API_KEY` the server only listens on loopback and needs no auth. Set it to listen on all interfaces (`HOST` to change that) and require `Authorization: Bearer <key>` on every route except `/health`:
+
+```bash
+AGENTBOX_API_KEY=$(openssl rand -hex 16) npm start
 ```
 
 ```bash
@@ -35,7 +41,11 @@ curl -s -X POST localhost:7788/sandboxes -d '{}'
 
 # run a command
 curl -s -X POST localhost:7788/sandboxes/sbx_.../exec -d '{"cmd":["python","-c","print(2+2)"],"timeoutMs":5000}'
-# {"exitCode":0,"stdout":"4\n","stderr":"","durationMs":...,"timedOut":false}
+# {"exitCode":0,"stdout":"4\n","stderr":"","durationMs":...,"timedOut":false,"truncated":false}
+
+# files live under /workspace; relative paths start there, ".." that leaves it is a 400
+curl -s -X PUT --data-binary @main.py "localhost:7788/sandboxes/sbx_.../files?path=main.py"
+curl -s "localhost:7788/sandboxes/sbx_.../files?path=main.py"
 
 # list, get, destroy
 curl -s localhost:7788/sandboxes
@@ -61,7 +71,7 @@ Sandboxes expire after `ttlSeconds` (default 600, max 3600). A reaper removes ex
 | User | `nobody` (65534), `--cap-drop=ALL`, `no-new-privileges` | |
 | Host mounts, docker socket, host env | none | |
 
-Other settings: `PORT` (7788), `AGENTBOX_IMAGE` (`python:3.12-slim`), `MAX_SANDBOXES` (20), `MAX_OUTPUT_BYTES` per stream per exec (1 MiB), `REAPER_INTERVAL_MS` (10000).
+Other settings: `PORT` (7788), `HOST`, `AGENTBOX_API_KEY`, `AGENTBOX_IMAGE` (`python:3.12-slim`), `MAX_SANDBOXES` (20), `MAX_OUTPUT_BYTES` per stream per exec (1 MiB, output past it is dropped and `truncated` is true), `MAX_FILE_BYTES` (8 MiB), `REAPER_INTERVAL_MS` (10000).
 
 ## Tests
 

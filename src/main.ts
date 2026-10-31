@@ -10,7 +10,7 @@ import { GvisorDockerRuntime } from "./runtime/gvisorDockerRuntime.js";
 import { SandboxService } from "./services/sandboxService.js";
 
 const config = loadConfig();
-const runtime = new GvisorDockerRuntime(new Docker(), config.image, config.maxOutputBytes);
+const runtime = new GvisorDockerRuntime(new Docker(), config.image, config.maxOutputBytes, config.maxFileBytes);
 
 // Refuse to start without gVisor (S1). A clear message beats a silent runc fallback.
 try {

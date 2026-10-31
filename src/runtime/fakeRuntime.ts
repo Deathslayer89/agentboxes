@@ -1,11 +1,11 @@
-import { ConflictError } from "../errors.js";
+import { ConflictError, NotFoundError } from "../errors.js";
 import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
-import type { SandboxRuntime } from "./sandboxRuntime.js";
+import type { OutputListener, SandboxRuntime } from "./sandboxRuntime.js";
 
 // In-memory stand-in for tests: no Docker, no gVisor. Records what the service asked for.
 export class FakeRuntime implements SandboxRuntime {
   // handle -> what was started
-  readonly containers = new Map<string, { sandboxId: string; limits: SandboxLimits }>();
+  readonly containers = new Map<string, { sandboxId: string; limits: SandboxLimits; files: Map<string, Buffer> }>();
   readonly execCalls: Array<{ handle: string; cmd: string[]; timeoutMs: number }> = [];
   private counter = 0;
 
@@ -14,14 +14,29 @@ export class FakeRuntime implements SandboxRuntime {
   async start(sandboxId: string, limits: SandboxLimits): Promise<string> {
     this.counter += 1;
     const handle = `ctr-${this.counter}`;
-    this.containers.set(handle, { sandboxId, limits });
+    this.containers.set(handle, { sandboxId, limits, files: new Map() });
     return handle;
   }
 
-  async exec(handle: string, cmd: string[], timeoutMs: number): Promise<ExecResult> {
-    if (!this.containers.has(handle)) throw new ConflictError("container is gone");
+  // Echoes the command back on stdout, in two chunks so streaming tests see more than one.
+  async exec(handle: string, cmd: string[], timeoutMs: number, onOutput?: OutputListener): Promise<ExecResult> {
+    this.container(handle);
     this.execCalls.push({ handle, cmd, timeoutMs });
-    return { exitCode: 0, stdout: cmd.join(" "), stderr: "", durationMs: 1, timedOut: false };
+    const text = cmd.join(" ");
+    onOutput?.("stdout", Buffer.from(text.slice(0, 3)));
+    onOutput?.("stdout", Buffer.from(text.slice(3)));
+    onOutput?.("stderr", Buffer.from(""));
+    return { exitCode: 0, stdout: text, stderr: "", durationMs: 1, timedOut: false, truncated: false };
+  }
+
+  async writeFile(handle: string, path: string, data: Buffer): Promise<void> {
+    this.container(handle).files.set(path, data);
+  }
+
+  async readFile(handle: string, path: string): Promise<Buffer> {
+    const data = this.container(handle).files.get(path);
+    if (data === undefined) throw new NotFoundError(`cannot read ${path}`);
+    return data;
   }
 
   async destroy(handle: string): Promise<void> {
@@ -30,5 +45,11 @@ export class FakeRuntime implements SandboxRuntime {
 
   async listManaged(): Promise<Array<{ sandboxId: string; handle: string }>> {
     return [...this.containers].map(([handle, c]) => ({ sandboxId: c.sandboxId, handle }));
+  }
+
+  private container(handle: string) {
+    const c = this.containers.get(handle);
+    if (c === undefined) throw new ConflictError("container is gone");
+    return c;
   }
 }

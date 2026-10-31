@@ -16,6 +16,8 @@ export interface Config {
   maxExecTimeoutMs: number;
   // Per stream (stdout, stderr) cap on captured output per exec.
   maxOutputBytes: number;
+  // Largest file the files API will write or read.
+  maxFileBytes: number;
   // Cap on live sandboxes across all callers.
   maxSandboxes: number;
   reaperIntervalMs: number;
@@ -53,6 +55,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     defaultExecTimeoutMs: num("DEFAULT_EXEC_TIMEOUT_MS", 30_000),
     maxExecTimeoutMs: num("MAX_EXEC_TIMEOUT_MS", 300_000),
     maxOutputBytes: num("MAX_OUTPUT_BYTES", 1_048_576),
+    maxFileBytes: num("MAX_FILE_BYTES", 8 * 1_048_576),
     maxSandboxes: num("MAX_SANDBOXES", 20),
     reaperIntervalMs: num("REAPER_INTERVAL_MS", 10_000),
   };

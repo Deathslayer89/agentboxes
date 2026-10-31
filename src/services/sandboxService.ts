@@ -5,6 +5,7 @@ import type { IdGenerator } from "../id.js";
 import { isGone, type CreateSandboxRequest, type ExecRequest, type ExecResult, type Sandbox, type SandboxLimits } from "../models/sandbox.js";
 import type { SandboxRepository } from "../repositories/sandboxRepository.js";
 import type { SandboxRuntime } from "../runtime/sandboxRuntime.js";
+import { resolveWorkspacePath } from "./workspacePath.js";
 
 // How long a gone sandbox stays visible in GET /sandboxes/:id after its TTL, so a
 // caller can still see "expired" or "destroyed" instead of a 404.
@@ -69,6 +70,26 @@ export class SandboxService {
     if (timeoutMs > this.config.maxExecTimeoutMs) {
       throw new ValidationError(`timeoutMs ${timeoutMs} exceeds the server maximum of ${this.config.maxExecTimeoutMs}`);
     }
+    return this.occupy(id, (handle) => this.runtime.exec(handle, request.cmd, timeoutMs));
+  }
+
+  // F7: files live under /workspace only. Returns the absolute path that was written.
+  async writeFile(id: string, path: unknown, data: Buffer): Promise<string> {
+    const absolute = resolveWorkspacePath(path);
+    if (data.length > this.config.maxFileBytes) {
+      throw new ValidationError(`file is ${data.length} bytes; the limit is ${this.config.maxFileBytes}`);
+    }
+    await this.occupy(id, (handle) => this.runtime.writeFile(handle, absolute, data));
+    return absolute;
+  }
+
+  async readFile(id: string, path: unknown): Promise<Buffer> {
+    const absolute = resolveWorkspacePath(path);
+    return this.occupy(id, (handle) => this.runtime.readFile(handle, absolute));
+  }
+
+  // Runs `work` against a live sandbox, marking it busy for the duration.
+  private async occupy<T>(id: string, work: (handle: string) => Promise<T>): Promise<T> {
     const sandbox = this.get(id);
     if (isGone(sandbox)) throw new ConflictError(`sandbox ${id} is ${sandbox.status}`);
     if (sandbox.handle === undefined) throw new ConflictError(`sandbox ${id} is still starting`);
@@ -77,7 +98,7 @@ export class SandboxService {
     sandbox.status = "busy";
     this.sandboxes.save(sandbox);
     try {
-      return await this.runtime.exec(sandbox.handle, request.cmd, timeoutMs);
+      return await work(sandbox.handle);
     } finally {
       sandbox.activeExecs -= 1;
       // Only flip back to ready if nothing else changed the status meanwhile (destroy during exec).

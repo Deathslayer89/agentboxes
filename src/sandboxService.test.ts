@@ -92,3 +92,15 @@ test("long-gone records are forgotten by the reaper", async () => {
   await service.reap();
   assert.throws(() => service.get(id), NotFoundError);
 });
+
+test("files are written and read back under /workspace; bad paths and big files are refused", async () => {
+  const { service, runtime } = makeService({ MAX_FILE_BYTES: "10" });
+  const { id } = await service.create();
+  assert.equal(await service.writeFile(id, "src/main.py", Buffer.from("print(1)")), "/workspace/src/main.py");
+  assert.equal((await service.readFile(id, "/workspace/src/main.py")).toString(), "print(1)");
+  assert.equal([...runtime.containers.values()][0]?.files.has("/workspace/src/main.py"), true);
+  await assert.rejects(service.writeFile(id, "../escape.py", Buffer.from("x")), ValidationError);
+  await assert.rejects(service.writeFile(id, "big.bin", Buffer.alloc(11)), ValidationError);
+  await assert.rejects(service.readFile(id, "missing.py"), NotFoundError);
+  assert.equal(service.get(id).status, "ready");
+});

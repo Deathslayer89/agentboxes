@@ -62,3 +62,18 @@ test("with an API key, /sandboxes needs the exact bearer token and /health stays
   const created = await app.request("/sandboxes", { method: "POST", body: "{}" });
   assert.equal(created.status, 401);
 });
+
+test("PUT and GET files carry raw bytes; a missing path is a 400", async () => {
+  const { app } = makeApp();
+  const { id } = (await (await app.request("/sandboxes", { method: "POST", body: "{}" })).json()) as { id: string };
+  const bytes = Buffer.from([0, 1, 2, 255, 10, 13]);
+  const put = await app.request(`/sandboxes/${id}/files?path=bin/data`, { method: "PUT", body: bytes });
+  assert.equal(put.status, 200);
+  assert.deepEqual(await put.json(), { path: "/workspace/bin/data", bytes: 6 });
+  const get = await app.request(`/sandboxes/${id}/files?path=/workspace/bin/data`);
+  assert.equal(get.status, 200);
+  assert.deepEqual(Buffer.from(await get.arrayBuffer()), bytes);
+  assert.equal((await app.request(`/sandboxes/${id}/files`, { method: "PUT", body: "x" })).status, 400);
+  assert.equal((await app.request(`/sandboxes/${id}/files?path=../x`, { method: "PUT", body: "x" })).status, 400);
+  assert.equal((await app.request(`/sandboxes/${id}/files?path=nope`)).status, 404);
+});
