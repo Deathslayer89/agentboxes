@@ -55,6 +55,10 @@ export type CreateSandboxRequest = Partial<SandboxLimits> & {
 export interface ExecRequest {
   cmd: string[];
   timeoutMs?: number;
+  // Working directory, under /workspace. Defaults to /workspace.
+  cwd?: string;
+  // Extra environment variables for this command only.
+  env?: Record<string, string>;
 }
 
 export interface ExecResult {

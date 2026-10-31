@@ -3,7 +3,7 @@ import { Writable } from "node:stream";
 import { ConflictError, NotFoundError, RuntimeUnavailableError, ValidationError } from "../errors.js";
 import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
 import { CA_DIR, type EgressAttachment, type EgressProxyManager } from "./egressProxy.js";
-import type { DeniedRequest, EgressPolicy, OutputListener, SandboxRuntime } from "./sandboxRuntime.js";
+import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime } from "./sandboxRuntime.js";
 
 // Docker runtime name for gVisor. Not configurable: there is no fallback to runc.
 const RUNTIME = "runsc";
@@ -31,6 +31,10 @@ const MB = 1024 * 1024;
 interface RunOptions {
   // Bytes to feed the command on stdin; stdin is closed right after.
   stdin?: Buffer;
+  // Working directory inside the container. Defaults to /workspace.
+  cwd?: string;
+  // Extra environment for this command only.
+  env?: Record<string, string>;
   // Called with each chunk as it arrives (F6 streaming).
   onOutput?: OutputListener;
   // Cap per stream on what is kept in memory. Defaults to maxOutputBytes.
@@ -159,14 +163,14 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     await this.egress.shutdown();
   }
 
-  async exec(handle: string, cmd: string[], timeoutMs: number, onOutput?: OutputListener): Promise<ExecResult> {
-    const r = await this.run(handle, cmd, timeoutMs, onOutput === undefined ? {} : { onOutput });
+  async exec(handle: string, cmd: string[], options: ExecOptions, onOutput?: OutputListener): Promise<ExecResult> {
+    const r = await this.run(handle, cmd, options.timeoutMs, { cwd: options.cwd, env: options.env, ...(onOutput === undefined ? {} : { onOutput }) });
     return {
       exitCode: r.exitCode,
       stdout: r.stdout.toString("utf8"),
       stderr: r.stderr.toString("utf8"),
       durationMs: r.durationMs,
-      timedOut: r.exitCode === 137 && r.durationMs >= timeoutMs,
+      timedOut: r.exitCode === 137 && r.durationMs >= options.timeoutMs,
       truncated: r.truncated,
     };
   }
@@ -220,7 +224,8 @@ export class GvisorDockerRuntime implements SandboxRuntime {
         AttachStdin: options.stdin !== undefined,
         AttachStdout: true,
         AttachStderr: true,
-        WorkingDir: WORKSPACE,
+        WorkingDir: options.cwd ?? WORKSPACE,
+        Env: Object.entries(options.env ?? {}).map(([key, value]) => `${key}=${value}`),
       });
       const stdout = new OutputBuffer(limit, (chunk) => options.onOutput?.("stdout", chunk));
       const stderr = new OutputBuffer(limit, (chunk) => options.onOutput?.("stderr", chunk));

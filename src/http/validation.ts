@@ -6,6 +6,8 @@ import { isValidTemplateName } from "../models/template.js";
 // A DNS name, optionally starting with "*." for subdomains, or an IP literal.
 const HOST = /^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
+const SHELL_VAR = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const MAX_ENV = 100;
 const MAX_HOSTS = 100;
 
 function isHost(value: unknown, wildcard: boolean): value is string {
@@ -69,6 +71,21 @@ export function parseExecRequest(body: unknown): ExecRequest {
   if (!Array.isArray(cmd) || cmd.length === 0 || !cmd.every((arg) => typeof arg === "string")) {
     throw new ValidationError("cmd must be a non-empty array of strings");
   }
+  const req: ExecRequest = { cmd };
   const timeoutMs = optionalPositive(obj, "timeoutMs", true);
-  return timeoutMs === undefined ? { cmd } : { cmd, timeoutMs };
+  if (timeoutMs !== undefined) req.timeoutMs = timeoutMs;
+  if (obj.cwd !== undefined) {
+    if (typeof obj.cwd !== "string" || obj.cwd === "") throw new ValidationError("cwd must be a non-empty string");
+    req.cwd = obj.cwd;
+  }
+  if (obj.env !== undefined) {
+    const env = obj.env;
+    if (typeof env !== "object" || env === null || Array.isArray(env)) throw new ValidationError("env must be an object of variable name to string value");
+    const entries = Object.entries(env as Record<string, unknown>);
+    if (entries.length > MAX_ENV || !entries.every(([name, value]) => SHELL_VAR.test(name) && typeof value === "string" && !value.includes("\0"))) {
+      throw new ValidationError(`env must map up to ${MAX_ENV} variable names to string values`);
+    }
+    req.env = env as Record<string, string>;
+  }
+  return req;
 }

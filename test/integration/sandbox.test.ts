@@ -244,3 +244,11 @@ test("S3: files in /workspace count as memory on top of memoryMb; past diskMb th
     await service.destroy(box.id);
   }
 });
+
+test("F2: cwd and env apply to one command only", async () => {
+  await service.writeFile(id, "sub/dir/marker.txt", Buffer.from("here"));
+  const r = await service.exec(id, { cmd: ["sh", "-c", "pwd; cat marker.txt; echo $GREETING"], cwd: "sub/dir", env: { GREETING: "hi" } });
+  assert.equal(r.stdout, "/workspace/sub/dir\nherehi\n");
+  const again = await service.exec(id, { cmd: ["sh", "-c", "pwd; echo [$GREETING]"] });
+  assert.equal(again.stdout, "/workspace\n[]\n");
+});

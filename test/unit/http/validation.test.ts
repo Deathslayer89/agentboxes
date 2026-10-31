@@ -44,3 +44,11 @@ test("create request: allowHosts and secrets are checked and lowercased", () => 
     assert.throws(() => parseCreateRequest(bad), ValidationError, JSON.stringify(bad));
   }
 });
+
+test("exec request: cwd and env are optional and checked", () => {
+  assert.deepEqual(parseExecRequest({ cmd: ["ls"], cwd: "src", env: { CI: "1" } }), { cmd: ["ls"], cwd: "src", env: { CI: "1" } });
+  assert.throws(() => parseExecRequest({ cmd: ["ls"], cwd: "" }), ValidationError);
+  assert.throws(() => parseExecRequest({ cmd: ["ls"], env: { "BAD NAME": "1" } }), ValidationError);
+  assert.throws(() => parseExecRequest({ cmd: ["ls"], env: { CI: 1 } }), ValidationError);
+  assert.throws(() => parseExecRequest({ cmd: ["ls"], env: ["CI=1"] }), ValidationError);
+});

@@ -59,7 +59,8 @@ test("exec runs through the runtime with the default timeout", async () => {
   const result = await service.exec(id, { cmd: ["python", "-c", "print(2+2)"] });
   assert.equal(result.stdout, "python -c print(2+2)");
   assert.deepEqual(runtime.execCalls[0]?.cmd, ["python", "-c", "print(2+2)"]);
-  assert.equal(runtime.execCalls[0]?.timeoutMs, config.defaultExecTimeoutMs);
+  assert.equal(runtime.execCalls[0]?.options.timeoutMs, config.defaultExecTimeoutMs);
+  assert.equal(runtime.execCalls[0]?.options.cwd, "/workspace");
   assert.equal(service.get(id).status, "ready");
   await assert.rejects(service.exec(id, { cmd: ["true"], timeoutMs: config.maxExecTimeoutMs + 1 }), ValidationError);
 });
@@ -174,4 +175,14 @@ test("allowHosts and secrets become an egress policy; the value comes from the s
   assert.equal((await service.egressLog(box.id)).denied.length, 1);
   await service.destroy(box.id);
   await assert.rejects(service.egressLog(box.id), ConflictError);
+});
+
+test("exec passes a validated cwd and per-command env to the runtime", async () => {
+  const { service, runtime } = makeService();
+  const { id } = await service.create();
+  await service.exec(id, { cmd: ["npm", "test"], cwd: "app/", env: { CI: "1" } });
+  assert.deepEqual(runtime.execCalls[0]?.options, { timeoutMs: 30_000, cwd: "/workspace/app", env: { CI: "1" } });
+  await service.exec(id, { cmd: ["ls"], cwd: "/workspace" });
+  assert.equal(runtime.execCalls[1]?.options.cwd, "/workspace");
+  await assert.rejects(service.exec(id, { cmd: ["ls"], cwd: "../" }), ValidationError);
 });

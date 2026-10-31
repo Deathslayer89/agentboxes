@@ -8,7 +8,7 @@ import type { SandboxRepository } from "../repositories/sandboxRepository.js";
 import type { TemplateRepository } from "../repositories/templateRepository.js";
 import type { DeniedRequest, EgressPolicy, OutputListener, SandboxRuntime } from "../runtime/sandboxRuntime.js";
 import type { PoolStats, WarmPools } from "./warmPool.js";
-import { resolveWorkspacePath } from "./workspacePath.js";
+import { resolveWorkspaceDir, resolveWorkspacePath } from "./workspacePath.js";
 
 /**
  * How long a gone sandbox stays visible in GET /sandboxes/:id after its TTL, so a
@@ -132,7 +132,8 @@ export class SandboxService {
     if (timeoutMs > this.config.maxExecTimeoutMs) {
       throw new ValidationError(`timeoutMs ${timeoutMs} exceeds the server maximum of ${this.config.maxExecTimeoutMs}`);
     }
-    return this.occupy(id, (handle) => this.runtime.exec(handle, request.cmd, timeoutMs, onOutput));
+    const options = { timeoutMs, cwd: resolveWorkspaceDir(request.cwd ?? "/workspace"), env: request.env ?? {} };
+    return this.occupy(id, (handle) => this.runtime.exec(handle, request.cmd, options, onOutput));
   }
 
   // Files live under /workspace only. Returns the absolute path that was written.

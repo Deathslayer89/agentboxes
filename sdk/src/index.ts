@@ -42,6 +42,10 @@ export interface SandboxInfo {
 
 export interface ExecOptions {
   timeoutMs?: number;
+  // Working directory under /workspace; relative paths start there.
+  cwd?: string;
+  // Extra environment variables for this command only.
+  env?: Record<string, string>;
 }
 
 export interface ExecResult {

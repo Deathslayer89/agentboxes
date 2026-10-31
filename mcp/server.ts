@@ -87,9 +87,14 @@ server.registerTool(
   {
     title: "Run a command in the sandbox",
     description: "Runs a program with arguments in /workspace, for example [\"pip\", \"install\", \"requests\"] or [\"ls\", \"-la\"]. Returns exit code, stdout and stderr.",
-    inputSchema: { cmd: z.array(z.string()).min(1), timeoutMs: z.number().int().positive().optional() },
+    inputSchema: {
+      cmd: z.array(z.string()).min(1),
+      cwd: z.string().optional().describe("Directory under /workspace to run in; relative paths start at /workspace"),
+      timeoutMs: z.number().int().positive().optional(),
+    },
   },
-  ({ cmd, timeoutMs }) => guarded(async () => text(describe(await (await sandbox()).exec(cmd, timeoutMs === undefined ? {} : { timeoutMs })))),
+  ({ cmd, cwd, timeoutMs }) =>
+    guarded(async () => text(describe(await (await sandbox()).exec(cmd, { ...(cwd === undefined ? {} : { cwd }), ...(timeoutMs === undefined ? {} : { timeoutMs }) })))),
 );
 
 server.registerTool(
