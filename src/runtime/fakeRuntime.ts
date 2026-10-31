@@ -9,6 +9,8 @@ export class FakeRuntime implements SandboxRuntime {
   readonly execCalls: Array<{ handle: string; cmd: string[]; timeoutMs: number }> = [];
   // When set, the next start() throws this instead of starting a container.
   startError: Error | undefined;
+  // When set, merged into the next exec() result, for example { timedOut: true, exitCode: 137 }.
+  nextExecResult: Partial<ExecResult> | undefined;
   private counter = 0;
 
   async init(): Promise<void> {}
@@ -33,7 +35,9 @@ export class FakeRuntime implements SandboxRuntime {
     onOutput?.("stdout", Buffer.from(text.slice(0, 3)));
     onOutput?.("stdout", Buffer.from(text.slice(3)));
     onOutput?.("stderr", Buffer.from(""));
-    return { exitCode: 0, stdout: text, stderr: "", durationMs: 1, timedOut: false, truncated: false };
+    const override = this.nextExecResult ?? {};
+    this.nextExecResult = undefined;
+    return { exitCode: 0, stdout: text, stderr: "", durationMs: 1, timedOut: false, truncated: false, ...override };
   }
 
   async writeFile(handle: string, path: string, data: Buffer): Promise<void> {

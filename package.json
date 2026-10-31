@@ -9,6 +9,8 @@
     "dev": "tsx watch src/main.ts",
     "typecheck": "tsc",
     "agentbox": "tsx src/cli.ts",
+    "example": "tsx examples/sdk-basic.ts",
+    "build:sdk": "tsc -p sdk/tsconfig.json",
     "test": "tsx --test src/*.test.ts",
     "test:integration": "tsx --test test/*.test.ts"
   },

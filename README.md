@@ -2,7 +2,7 @@
 
 Self-hosted sandboxes for AI agents. Runs on any Linux box with Docker and gVisor; no KVM needed.
 
-Status: v0.1 in progress. Create, exec, streaming exec, files, warm pool, templates, TTL reaper and the API key are here. The SDK and the egress proxy come next.
+Status: v0.1 in progress. Create, exec, streaming exec, files, warm pool, templates, TTL reaper, API key and the TypeScript SDK are here. The egress proxy, secrets and the MCP server come next.
 
 ## Requirements
 
@@ -65,6 +65,30 @@ Sandboxes expire after `ttlSeconds` (default 600, max 3600). A reaper removes ex
 ## Warm pool
 
 The server keeps default-sized containers started ahead of time, one pool per template, sized by `POOL_SIZES` (default `default:3`). A create request whose memory, cpus, disk and pids match the defaults takes one from its template's pool; `startup.source` says `pool` and `startup.ms` is the server-side time to ready. Any other size, or a template without a pool, starts a fresh container (`cold`), which takes Docker plus gVisor start time. Each pooled container is used once and destroyed with its sandbox; a background loop refills the pool. Pool containers do not count towards `MAX_SANDBOXES`. `GET /stats` shows size, ready, starting, hits and misses per pool.
+
+## TypeScript SDK
+
+The client in `sdk/` has no dependencies and needs Node 20+. It is not on npm yet; until then import it from the repo or build it with `npm run build:sdk`.
+
+```ts
+import { Agentbox, ExecTimeout } from "agentbox";
+
+const agentbox = new Agentbox({ baseUrl: "http://127.0.0.1:7788", apiKey: process.env.AGENTBOX_API_KEY });
+const box = await agentbox.create({ template: "default", ttlSeconds: 300 });
+
+const r = await box.exec(["python", "-c", "print(2+2)"]);        // { exitCode, stdout, stderr, durationMs, truncated }
+await box.writeFile("main.py", "print('hello')");
+const code = await box.readFile("main.py");
+
+for await (const event of box.execStream(["python", "main.py"])) {
+  if (event.type === "exit") console.log("exit", event.exitCode);
+  else process.stdout.write(event.text);                          // event.type is "stdout" or "stderr"
+}
+
+await box.destroy();
+```
+
+Errors are typed: `SandboxNotFound` (404), `PoolExhausted` (the server's live sandbox limit, 429), `ExecTimeout` (the command was killed at its deadline; `error.result` holds the output so far) and `AgentboxError` for everything else, with `status` and the server's error `code`. `npm run example` runs `examples/sdk-basic.ts` against a local server and prints the time each step took.
 
 ## Templates
 
