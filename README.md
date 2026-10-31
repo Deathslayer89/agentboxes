@@ -89,7 +89,7 @@ curl -s localhost:7788/sandboxes/sbx_.../egress-log
 
 How it works: such a sandbox gets its own internal Docker network with an isolated gateway (Docker 28+), so the only thing it can reach is the egress proxy container, not the internet and not the host. Inside, `HTTP_PROXY` and `HTTPS_PROXY` point at the proxy with a token that identifies the sandbox. The proxy lets allowlisted hosts through and refuses everything else with a 403, recording each refusal in the egress log. Hosts that resolve to loopback, link-local (the cloud metadata address `169.254.169.254`), private or multicast addresses are refused even when allowlisted. `*.example.com` in the allowlist matches subdomains.
 
-pip, curl, git, npm, and Python's `urllib` and `requests` honour the proxy variables. Node's built-in `fetch` does not; use `NODE_USE_ENV_PROXY=1` on Node 24+ or undici's `EnvHttpProxyAgent`. Installing packages at run time this way is the slow path; use a template for anything you need more than once.
+pip, curl, git, npm, and Python's `urllib` and `requests` honour the proxy variables. Node's built-in `fetch` only does so with `NODE_USE_ENV_PROXY=1`, which the node template sets (verified on Node 22; undici prints an "experimental" warning). Installing packages at run time this way is the slow path; use a template for anything you need more than once.
 
 A sandbox with a network always starts cold, since pooled containers have no network. The proxy container (`agentbox-egress-proxy`) is built from `proxy/` on the first start and runs under runc, not gVisor, because gVisor does not pick up networks connected after start; it runs as a non-root user with all capabilities dropped, a read-only root and a 256 MB limit.
 
@@ -235,9 +235,9 @@ Machine: 12th Gen Intel Core i7-12700H, 20 threads, 15 GB RAM, Linux 7.0.0, Dock
 | create cold (no pool) | 10 | 209.5 | 240.3 | 240.3 |
 | exec `print(2+2)` | 30 | 84.3 | 101.0 | 109.7 |
 
-An idle sandbox holds about 16 MB of host memory with gVisor's sentry included, so about 62 idle sandboxes fit in 1 GB of RAM. A sandbox with a network allowlist starts cold in about 600 ms, since it also gets its own Docker network, the proxy joins it, and the CA is installed.
+An idle sandbox holds about 16 MB of host memory with gVisor's sentry included, so about 62 idle sandboxes fit in 1 GB of RAM. A sandbox with a network allowlist starts cold in about 300 ms, since it also gets its own Docker network and the proxy joins it; with secrets, installing the CA adds another 300 ms.
 
-The roadmap's kill criterion is gVisor being about 3x slower than runc on common tasks. Measured here: Python startup 14 ms under gVisor against 11 ms under runc, and `pip install requests` 2.0 s against 1.9 s. Syscall-heavy microbenchmarks (thousands of tiny files, process spawn loops) do show 3 to 4x, so the KVM platform above is worth registering on a host that has it.
+The roadmap's kill criterion is gVisor being about 3x slower than runc on common tasks. Measured here: Python startup 14 ms under gVisor against 11 ms under runc, `pip install requests` 2.0 s against 1.9 s, and `npm install express` (65 packages, node template) 1.8 s against 1.3 s. Syscall-heavy microbenchmarks (thousands of tiny files, process spawn loops) do show 3 to 4x, so the KVM platform above is worth registering on a host that has it.
 
 Why `/workspace` is a tmpfs and not a disk volume: one Python process writing and reading 3000 small files took 214 ms on tmpfs under gVisor and 353 ms on a Docker volume under gVisor (85 ms and 62 ms under plain runc). Files in RAM are the faster choice under gVisor, and the size limit is real; the cost is that `diskMb` is memory.
 
