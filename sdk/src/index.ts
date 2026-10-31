@@ -1,4 +1,8 @@
-// TypeScript client for an agentbox server. Node 20+, no dependencies: it only uses the global fetch.
+// TypeScript client for an agentbox server. Node 20+, no dependencies: it only uses the global fetch and the system tar.
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const run = promisify(execFile);
 
 export interface SandboxLimits {
   memoryMb: number;
@@ -230,9 +234,41 @@ export class Sandbox {
     return new Uint8Array(await res.arrayBuffer());
   }
 
+  // Unpacks a tar archive into a directory under /workspace (default /workspace itself).
+  async uploadTar(tar: Uint8Array, dir = "/workspace"): Promise<void> {
+    await this.client.request("PUT", `/sandboxes/${this.id}/archive?path=${encodeURIComponent(dir)}`, new Uint8Array(tar), "application/x-tar");
+  }
+
+  // Packs a directory under /workspace as a tar archive.
+  async downloadTar(dir = "/workspace"): Promise<Uint8Array> {
+    const res = await this.client.request("GET", `/sandboxes/${this.id}/archive?path=${encodeURIComponent(dir)}`);
+    return new Uint8Array(await res.arrayBuffer());
+  }
+
+  // Sends a local directory's contents into the sandbox, using the system tar.
+  async uploadDirectory(localDir: string, dir = "/workspace"): Promise<void> {
+    const { stdout } = await run("tar", ["-c", "-C", localDir, "."], { encoding: "buffer", maxBuffer: 1024 * 1024 * 1024 });
+    await this.uploadTar(new Uint8Array(stdout), dir);
+  }
+
+  // Writes a sandbox directory's contents into a local directory, refusing archive members that would leave it.
+  async downloadDirectory(dir: string, localDir: string): Promise<void> {
+    const tar = Buffer.from(await this.downloadTar(dir));
+    const listing = await run("tar", ["-t"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, input: tar } as never);
+    const unsafe = String(listing.stdout).split("\n").filter((m) => m !== "" && (m.startsWith("/") || m.split("/").includes("..")));
+    if (unsafe.length > 0) throw new Error(`archive from the sandbox has unsafe paths: ${unsafe.slice(0, 3).join(", ")}`);
+    await run("tar", ["-x", "-C", localDir], { encoding: "buffer", maxBuffer: 1024 * 1024, input: tar } as never);
+  }
+
   // Outbound requests the proxy refused, with the allowlist in force.
   async egressLog(): Promise<{ allowHosts: string[]; denied: DeniedRequest[] }> {
     return (await this.client.json("GET", `/sandboxes/${this.id}/egress-log`)) as { allowHosts: string[]; denied: DeniedRequest[] };
+  }
+
+  // Pushes the expiry to now plus ttlSeconds (default: the sandbox's own TTL).
+  async extend(ttlSeconds?: number): Promise<SandboxInfo> {
+    this.info = (await this.client.json("POST", `/sandboxes/${this.id}/extend`, ttlSeconds === undefined ? {} : { ttlSeconds })) as SandboxInfo;
+    return this.info;
   }
 
   // Re-reads the sandbox record from the server (status, expiry).

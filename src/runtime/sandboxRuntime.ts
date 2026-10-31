@@ -36,7 +36,7 @@ export interface SandboxRuntime {
    */
   init(): Promise<void>;
 
-/**
+  /**
    * Start an isolated container from `image` for a sandbox. Returns an opaque handle (the container id).
    * Without `egress` the container has no network at all; with it, only the egress proxy is reachable.
    */
@@ -59,6 +59,12 @@ export interface SandboxRuntime {
 
   // Read a file from inside the sandbox. Throws NotFoundError if it does not exist.
   readFile(handle: string, path: string): Promise<Buffer>;
+
+  // Unpack a tar archive into `dir`, creating it. `dir` is absolute and under /workspace.
+  putArchive(handle: string, dir: string, tar: Buffer): Promise<void>;
+
+  // Pack `dir` as a tar archive. Throws NotFoundError if it does not exist.
+  getArchive(handle: string, dir: string): Promise<Buffer>;
 
   // Stop and remove the container. Must not fail if it is already gone.
   destroy(handle: string): Promise<void>;

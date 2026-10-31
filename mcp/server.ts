@@ -27,7 +27,11 @@ let current: Sandbox | undefined;
 async function sandbox(): Promise<Sandbox> {
   if (current !== undefined) {
     const info = await current.refresh().catch(() => undefined);
-    if (info !== undefined && (info.status === "ready" || info.status === "busy")) return current;
+    if (info !== undefined && (info.status === "ready" || info.status === "busy")) {
+      // Keep a sandbox that is still in use alive instead of losing its files at the TTL.
+      if (new Date(info.expiresAt).getTime() - Date.now() < 5 * 60_000) await current.extend().catch(() => {});
+      return current;
+    }
   }
   current = await client.create(createOptions);
   console.error(`agentbox mcp: using sandbox ${current.id} (${current.info.startup.source})`);

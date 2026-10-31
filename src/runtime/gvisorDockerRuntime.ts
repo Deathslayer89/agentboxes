@@ -5,8 +5,6 @@ import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
 import { CA_DIR, type EgressAttachment, type EgressProxyManager } from "./egressProxy.js";
 import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime } from "./sandboxRuntime.js";
 
-// Docker runtime name for gVisor. Not configurable: there is no fallback to runc.
-const RUNTIME = "runsc";
 const WORKSPACE = "/workspace";
 // uid:gid of "nobody" in Debian based images. The sandbox never runs as root (S5).
 const SANDBOX_UID = 65534;
@@ -26,6 +24,7 @@ const LABEL_NETWORKED = "agentbox.networked";
 const GUARD_MS = 5_000;
 // File reads and writes are plain `cat`; this only matters if the path is a FIFO.
 const FILE_TIMEOUT_MS = 30_000;
+const ARCHIVE_TIMEOUT_MS = 300_000;
 const MB = 1024 * 1024;
 
 interface RunOptions {
@@ -53,9 +52,12 @@ interface RunResult {
 export class GvisorDockerRuntime implements SandboxRuntime {
   constructor(
     private readonly docker: Docker,
+    // runsc, or a registered variant such as runsc-kvm. Checked at init; never runc.
+    private readonly runtimeName: string,
     private readonly image: string,
     private readonly maxOutputBytes: number,
     private readonly maxFileBytes: number,
+    private readonly maxArchiveBytes: number,
     private readonly egress: EgressProxyManager,
   ) {}
 
@@ -66,9 +68,9 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     } catch (e) {
       throw new RuntimeUnavailableError(`cannot reach Docker: ${messageOf(e)}`);
     }
-    if (!info.Runtimes || !(RUNTIME in info.Runtimes)) {
+    if (!info.Runtimes || !(this.runtimeName in info.Runtimes)) {
       throw new RuntimeUnavailableError(
-        `Docker runtime "${RUNTIME}" is not registered. Install gVisor, run "sudo runsc install", then restart Docker.`,
+        `Docker runtime "${this.runtimeName}" is not registered. Install gVisor, run "sudo runsc install", then restart Docker.`,
       );
     }
     await this.ensureImage();
@@ -119,7 +121,7 @@ export class GvisorDockerRuntime implements SandboxRuntime {
       ],
       Labels: { [LABEL]: "1", [LABEL_ID]: sandboxId, [LABEL_NETWORKED]: attachment === undefined ? "0" : "1" },
       HostConfig: {
-        Runtime: RUNTIME, // S1: gVisor
+        Runtime: this.runtimeName, // S1: gVisor
         NetworkMode: attachment?.network ?? "none", // S2: no network, or only the sandbox's own network to the proxy
         // Under gVisor the tmpfs at /workspace lives in the sandbox's memory, so the cgroup
         // limit is processes plus files; the split between the two is not enforced.
@@ -189,6 +191,19 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     const r = await this.run(handle, ["cat", "--", path], FILE_TIMEOUT_MS, { limit: this.maxFileBytes });
     if (r.exitCode !== 0) throw new NotFoundError(`cannot read ${path}: ${r.stderr.toString("utf8").trim()}`);
     if (r.truncated) throw new ValidationError(`${path} is larger than the ${this.maxFileBytes} byte limit`);
+    return r.stdout;
+  }
+
+  // Whole trees travel the same way as files: a tar stream on stdin or stdout of tar inside the sandbox.
+  async putArchive(handle: string, dir: string, tar: Buffer): Promise<void> {
+    const r = await this.run(handle, ["sh", "-c", 'mkdir -p "$1" && tar -x -C "$1"', "sh", dir], ARCHIVE_TIMEOUT_MS, { stdin: tar });
+    if (r.exitCode !== 0) throw new ValidationError(`cannot unpack into ${dir}: ${r.stderr.toString("utf8").trim()}`);
+  }
+
+  async getArchive(handle: string, dir: string): Promise<Buffer> {
+    const r = await this.run(handle, ["tar", "-c", "-C", dir, "."], ARCHIVE_TIMEOUT_MS, { limit: this.maxArchiveBytes });
+    if (r.exitCode !== 0) throw new NotFoundError(`cannot pack ${dir}: ${r.stderr.toString("utf8").trim()}`);
+    if (r.truncated) throw new ValidationError(`${dir} packs to more than the ${this.maxArchiveBytes} byte limit`);
     return r.stdout;
   }
 

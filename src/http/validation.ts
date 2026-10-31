@@ -65,6 +65,10 @@ export function parseCreateRequest(body: unknown): CreateSandboxRequest {
   return req;
 }
 
+export function parseExtendRequest(body: unknown): number | undefined {
+  return optionalPositive(asObject(body), "ttlSeconds", true);
+}
+
 export function parseExecRequest(body: unknown): ExecRequest {
   const obj = asObject(body);
   const cmd = obj.cmd;

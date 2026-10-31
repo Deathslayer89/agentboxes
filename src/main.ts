@@ -15,7 +15,7 @@ import { WarmPool, WarmPools } from "./services/warmPool.js";
 
 const config = loadConfig();
 const docker = new Docker();
-const runtime = new GvisorDockerRuntime(docker, config.image, config.maxOutputBytes, config.maxFileBytes, new EgressProxyManager(docker));
+const runtime = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker));
 const templates = new DockerTemplateRepository(docker);
 
 // Refuse to start without gVisor instead of silently running on runc.
@@ -72,7 +72,7 @@ if (config.apiKey === undefined) {
 }
 const appOptions = config.apiKey === undefined ? {} : { apiKey: config.apiKey };
 const server = serve({ fetch: createApp(service, appOptions).fetch, hostname: config.host, port: config.port }, (info) => {
-  console.log(`agentbox listening on http://${info.address}:${info.port} (image ${config.image}, runtime runsc)`);
+  console.log(`agentbox listening on http://${info.address}:${info.port} (image ${config.image}, runtime ${config.runtime})`);
 });
 
 /**

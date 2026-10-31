@@ -3,7 +3,8 @@
  *   npm run test:integration
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import os from "node:os";
@@ -21,7 +22,7 @@ import { WarmPool, WarmPools } from "../../src/services/warmPool.js";
 
 const config = loadConfig({ ...process.env, DEFAULT_TTL_SECONDS: "120" });
 const docker = new Docker();
-const runtime = new GvisorDockerRuntime(docker, config.image, config.maxOutputBytes, config.maxFileBytes, new EgressProxyManager(docker));
+const runtime = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker));
 const templates = new DockerTemplateRepository(docker);
 const service = new SandboxService(new InMemorySandboxRepository(), templates, runtime, config, new SystemClock(), new RandomIdGenerator("sbxtest_"), new WarmPools());
 
@@ -251,4 +252,24 @@ test("F2: cwd and env apply to one command only", async () => {
   assert.equal(r.stdout, "/workspace/sub/dir\nherehi\n");
   const again = await service.exec(id, { cmd: ["sh", "-c", "pwd; echo [$GREETING]"] });
   assert.equal(again.stdout, "/workspace\n[]\n");
+});
+
+test("F7: a directory tree goes in as one archive, runs, and comes back out", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentbox-tree-"));
+  const out = mkdtempSync(join(tmpdir(), "agentbox-tree-out-"));
+  try {
+    mkdirSync(join(dir, "pkg"));
+    writeFileSync(join(dir, "pkg", "__init__.py"), "VALUE = 41\n");
+    writeFileSync(join(dir, "main.py"), "import pkg\nopen('result.txt', 'w').write(str(pkg.VALUE + 1))\n");
+    const tar = execFileSync("tar", ["-c", "-C", dir, "."]);
+    await service.putArchive(id, "proj", tar);
+    const r = await service.exec(id, { cmd: ["python", "main.py"], cwd: "proj" });
+    assert.equal(r.exitCode, 0, r.stderr);
+    execFileSync("tar", ["-x", "-C", out], { input: await service.getArchive(id, "proj") });
+    assert.equal(readFileSync(join(out, "result.txt"), "utf8"), "42");
+    assert.equal(readFileSync(join(out, "pkg", "__init__.py"), "utf8"), "VALUE = 41\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(out, { recursive: true, force: true });
+  }
 });

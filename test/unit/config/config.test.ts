@@ -15,3 +15,9 @@ test("a default above its maximum is refused at boot", () => {
   assert.throws(() => loadConfig({ DEFAULT_MEMORY_MB: "8192" }), /above its maximum/);
   assert.throws(() => loadConfig({ MAX_SANDBOXES: "0" }), /positive/);
 });
+
+test("AGENTBOX_RUNTIME accepts runsc variants only", () => {
+  assert.equal(loadConfig({}).runtime, "runsc");
+  assert.equal(loadConfig({ AGENTBOX_RUNTIME: "runsc-kvm" }).runtime, "runsc-kvm");
+  assert.throws(() => loadConfig({ AGENTBOX_RUNTIME: "runc" }), /runsc/);
+});

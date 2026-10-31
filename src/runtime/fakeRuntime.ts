@@ -58,6 +58,17 @@ export class FakeRuntime implements SandboxRuntime {
     return data;
   }
 
+  // Archives are kept as-is under the directory key; nothing is unpacked.
+  async putArchive(handle: string, dir: string, tar: Buffer): Promise<void> {
+    this.container(handle).files.set(`${dir}.tar`, tar);
+  }
+
+  async getArchive(handle: string, dir: string): Promise<Buffer> {
+    const tar = this.container(handle).files.get(`${dir}.tar`);
+    if (tar === undefined) throw new NotFoundError(`cannot pack ${dir}`);
+    return tar;
+  }
+
   async destroy(handle: string): Promise<void> {
     this.containers.delete(handle);
   }

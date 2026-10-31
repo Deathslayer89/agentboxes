@@ -151,6 +151,21 @@ export class SandboxService {
     return this.occupy(id, (handle) => this.runtime.readFile(handle, absolute));
   }
 
+  // Unpacks a tar archive into a directory under /workspace. Returns the absolute directory.
+  async putArchive(id: string, dir: unknown, tar: Buffer): Promise<string> {
+    const absolute = resolveWorkspaceDir(dir);
+    if (tar.length > this.config.maxArchiveBytes) {
+      throw new ValidationError(`archive is ${tar.length} bytes; the limit is ${this.config.maxArchiveBytes}`);
+    }
+    await this.occupy(id, (handle) => this.runtime.putArchive(handle, absolute, tar));
+    return absolute;
+  }
+
+  async getArchive(id: string, dir: unknown): Promise<Buffer> {
+    const absolute = resolveWorkspaceDir(dir);
+    return this.occupy(id, (handle) => this.runtime.getArchive(handle, absolute));
+  }
+
   // Runs `work` against a live sandbox, marking it busy for the duration.
   private async occupy<T>(id: string, work: (handle: string) => Promise<T>): Promise<T> {
     const sandbox = this.get(id);
@@ -168,6 +183,19 @@ export class SandboxService {
       if (sandbox.activeExecs === 0 && sandbox.status === "busy") sandbox.status = "ready";
       this.sandboxes.save(sandbox);
     }
+  }
+
+  // Moves the expiry to now plus ttlSeconds (default: the sandbox's own TTL), within the server maximum.
+  extend(id: string, ttlSeconds?: number): Sandbox {
+    const sandbox = this.get(id);
+    if (isGone(sandbox)) throw new ConflictError(`sandbox ${id} is ${sandbox.status}`);
+    const ttl = ttlSeconds ?? sandbox.limits.ttlSeconds;
+    if (ttl > this.config.maximums.ttlSeconds) {
+      throw new ValidationError(`ttlSeconds ${ttl} exceeds the server maximum of ${this.config.maximums.ttlSeconds}`);
+    }
+    sandbox.expiresAt = new Date(this.clock.now().getTime() + ttl * 1000);
+    this.sandboxes.save(sandbox);
+    return sandbox;
   }
 
   async destroy(id: string): Promise<Sandbox> {

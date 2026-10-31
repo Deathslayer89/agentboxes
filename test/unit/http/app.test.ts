@@ -142,3 +142,22 @@ test("egress log route and network in the view", async () => {
   assert.equal((await app.request("/sandboxes", { method: "POST", body: JSON.stringify({ secrets: { "api.openai.com": "NOPE" } }) })).status, 400);
   assert.equal((await app.request("/sandboxes", { method: "POST", body: JSON.stringify({ allowHosts: ["bad host"] }) })).status, 400);
 });
+
+test("PUT and GET archive carry tar bytes; the path defaults to /workspace", async () => {
+  const { app } = makeApp();
+  const { id } = (await (await app.request("/sandboxes", { method: "POST", body: "{}" })).json()) as { id: string };
+  const put = await app.request(`/sandboxes/${id}/archive`, { method: "PUT", body: Buffer.from("tar!") });
+  assert.deepEqual(await put.json(), { path: "/workspace", bytes: 4 });
+  const get = await app.request(`/sandboxes/${id}/archive?path=/workspace/`);
+  assert.equal(get.headers.get("content-type"), "application/x-tar");
+  assert.equal(Buffer.from(await get.arrayBuffer()).toString(), "tar!");
+  assert.equal((await app.request(`/sandboxes/${id}/archive?path=../`, { method: "PUT", body: "x" })).status, 400);
+});
+
+test("POST /sandboxes/:id/extend returns the record with a later expiry", async () => {
+  const { app } = makeApp();
+  const created = (await (await app.request("/sandboxes", { method: "POST", body: "{}" })).json()) as { id: string; expiresAt: string };
+  const extended = (await (await app.request(`/sandboxes/${created.id}/extend`, { method: "POST", body: JSON.stringify({ ttlSeconds: 1200 }) })).json()) as { expiresAt: string };
+  assert.ok(new Date(extended.expiresAt) > new Date(created.expiresAt));
+  assert.equal((await app.request(`/sandboxes/${created.id}/extend`, { method: "POST", body: JSON.stringify({ ttlSeconds: 0 }) })).status, 400);
+});

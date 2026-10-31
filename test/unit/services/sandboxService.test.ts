@@ -186,3 +186,25 @@ test("exec passes a validated cwd and per-command env to the runtime", async () 
   assert.equal(runtime.execCalls[1]?.options.cwd, "/workspace");
   await assert.rejects(service.exec(id, { cmd: ["ls"], cwd: "../" }), ValidationError);
 });
+
+test("archives go to and from a directory under /workspace, within the size limit", async () => {
+  const { service, runtime } = makeService({ MAX_ARCHIVE_BYTES: "100" });
+  const { id } = await service.create();
+  assert.equal(await service.putArchive(id, "repo", Buffer.from("tar-bytes")), "/workspace/repo");
+  assert.equal([...runtime.containers.values()][0]?.files.get("/workspace/repo.tar")?.toString(), "tar-bytes");
+  assert.equal((await service.getArchive(id, "repo/")).toString(), "tar-bytes");
+  await assert.rejects(service.putArchive(id, "repo", Buffer.alloc(101)), ValidationError);
+  await assert.rejects(service.putArchive(id, "../x", Buffer.from("t")), ValidationError);
+  await assert.rejects(service.getArchive(id, "missing"), NotFoundError);
+});
+
+test("extend moves the expiry forward from now, within the maximum, and only for live sandboxes", async () => {
+  const { service, clock, config } = makeService({ DEFAULT_TTL_SECONDS: "60" });
+  const { id } = await service.create();
+  clock.advance(50_000);
+  assert.equal(service.extend(id).expiresAt.getTime(), clock.now().getTime() + 60_000);
+  assert.equal(service.extend(id, 600).expiresAt.getTime(), clock.now().getTime() + 600_000);
+  assert.throws(() => service.extend(id, config.maximums.ttlSeconds + 1), ValidationError);
+  await service.destroy(id);
+  assert.throws(() => service.extend(id), ConflictError);
+});

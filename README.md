@@ -50,9 +50,19 @@ curl -s -N -X POST localhost:7788/sandboxes/sbx_.../exec/stream -d '{"cmd":["pyt
 # event: stdout        data: "2\n"
 # event: exit          data: {"exitCode":0,"durationMs":3045,"timedOut":false,"truncated":false}
 
+# run in a subdirectory with extra environment, for this command only
+curl -s -X POST localhost:7788/sandboxes/sbx_.../exec -d '{"cmd":["npm","test"],"cwd":"app","env":{"CI":"1"}}'
+
 # files live under /workspace; relative paths start there, ".." that leaves it is a 400
 curl -s -X PUT --data-binary @main.py "localhost:7788/sandboxes/sbx_.../files?path=main.py"
 curl -s "localhost:7788/sandboxes/sbx_.../files?path=main.py"
+
+# whole trees as tar archives: a repository in, the results out
+tar -c -C ./myrepo . | curl -s -X PUT --data-binary @- "localhost:7788/sandboxes/sbx_.../archive?path=repo"
+curl -s "localhost:7788/sandboxes/sbx_.../archive?path=repo" | tar -x -C ./out
+
+# keep a sandbox alive while it is in use: expiry becomes now plus ttlSeconds (default: its own TTL)
+curl -s -X POST localhost:7788/sandboxes/sbx_.../extend -d '{"ttlSeconds":1800}'
 
 # list, get, destroy
 curl -s localhost:7788/sandboxes
@@ -60,7 +70,7 @@ curl -s localhost:7788/sandboxes/sbx_...
 curl -s -X DELETE localhost:7788/sandboxes/sbx_...
 ```
 
-Sandboxes expire after `ttlSeconds` (default 600, max 3600). A reaper removes expired ones and any container labelled `agentbox=1` that the server does not know about.
+Sandboxes expire after `ttlSeconds` (default 600, max 3600) unless extended. A reaper removes expired ones and any container labelled `agentbox=1` that the server does not know about.
 
 ## Warm pool
 
@@ -105,6 +115,10 @@ const box = await agentbox.create({ template: "default", ttlSeconds: 300, allowH
 const r = await box.exec(["python", "-c", "print(2+2)"]);        // { exitCode, stdout, stderr, durationMs, truncated }
 await box.writeFile("main.py", "print('hello')");
 const code = await box.readFile("main.py");
+await box.uploadDirectory("./myrepo", "repo");                     // whole tree in, through the system tar
+const r2 = await box.exec(["npm", "test"], { cwd: "repo", env: { CI: "1" } });
+await box.downloadDirectory("repo", "./out");                     // and back out
+await box.extend();                                               // push the expiry out while the session continues
 
 for await (const event of box.execStream(["python", "main.py"])) {
   if (event.type === "exit") console.log("exit", event.exitCode);
@@ -168,6 +182,8 @@ curl -s localhost:7788/templates
 curl -s -X POST localhost:7788/sandboxes -d '{"template":"data-science"}'
 ```
 
+`templates/node/Dockerfile` is a ready-made template with Node 22, npm and git for TypeScript work: `npm run agentbox -- template build node templates/node/Dockerfile`, then `create({ template: "node" })`.
+
 Sandboxes still run as user 65534 with a read-only root, so anything the Dockerfile installs must be world-readable, which `pip install` as root already is. To keep a template instant, give it a pool: `POOL_SIZES=default:3,data-science:2`. The server refuses to start if `POOL_SIZES` names a template that has not been built.
 
 Installing packages at run time (`pip install` inside a sandbox) fails today because the sandbox has no network. The Day 3 egress allowlist will allow it per sandbox for `pypi.org` and `files.pythonhosted.org`, as the slow path.
@@ -176,7 +192,7 @@ Installing packages at run time (`pip install` inside a sandbox) fails today bec
 
 | | Default | Env var |
 |---|---|---|
-| Runtime | gVisor (`runsc`), not configurable | |
+| Runtime | gVisor (`runsc`, or a registered variant such as `runsc-kvm`) | `AGENTBOX_RUNTIME` |
 | Network | none, or an allowlist through the egress proxy | |
 | Memory | 512 MB for processes, no swap | `DEFAULT_MEMORY_MB`, `MAX_MEMORY_MB` |
 | CPUs | 1 | `DEFAULT_CPUS`, `MAX_CPUS` |
@@ -188,7 +204,24 @@ Installing packages at run time (`pip install` inside a sandbox) fails today bec
 | User | `nobody` (65534), `--cap-drop=ALL`, `no-new-privileges` | |
 | Host mounts, docker socket, host env | none | |
 
-Other settings: `PORT` (7788), `HOST`, `AGENTBOX_API_KEY`, `AGENTBOX_IMAGE` (`python:3.12-slim`), `MAX_SANDBOXES` (20), `MAX_OUTPUT_BYTES` per stream per exec (1 MiB, output past it is dropped and `truncated` is true), `MAX_FILE_BYTES` (8 MiB), `POOL_SIZES` (`default:3`), `REAPER_INTERVAL_MS` (10000).
+Other settings: `PORT` (7788), `HOST`, `AGENTBOX_API_KEY`, `AGENTBOX_IMAGE` (`python:3.12-slim`), `MAX_SANDBOXES` (20), `MAX_OUTPUT_BYTES` per stream per exec (1 MiB, output past it is dropped and `truncated` is true), `MAX_FILE_BYTES` (8 MiB), `MAX_ARCHIVE_BYTES` (256 MiB), `POOL_SIZES` (`default:3`), `REAPER_INTERVAL_MS` (10000).
+
+### gVisor's KVM platform
+
+By default runsc uses the systrap platform, which works everywhere. On a machine with `/dev/kvm`, the KVM platform cuts syscall overhead. Register it as a second runtime (needs sudo), then point agentbox at it:
+
+```bash
+sudo python3 - <<'PY'
+import json; p="/etc/docker/daemon.json"; d=json.load(open(p))
+d.setdefault("runtimes", {})["runsc-kvm"]={"path":"/usr/bin/runsc","runtimeArgs":["--platform=kvm"]}
+json.dump(d, open(p,"w"), indent=4)
+PY
+sudo systemctl restart docker
+docker run --rm --runtime=runsc-kvm alpine uname -a
+AGENTBOX_RUNTIME=runsc-kvm npm start
+```
+
+`AGENTBOX_RUNTIME` only accepts `runsc` or a `runsc-` variant; there is no way to run on plain runc.
 
 ## Benchmarks
 
@@ -203,6 +236,10 @@ Machine: 12th Gen Intel Core i7-12700H, 20 threads, 15 GB RAM, Linux 7.0.0, Dock
 | exec `print(2+2)` | 30 | 84.3 | 101.0 | 109.7 |
 
 An idle sandbox holds about 16 MB of host memory with gVisor's sentry included, so about 62 idle sandboxes fit in 1 GB of RAM. A sandbox with a network allowlist starts cold in about 600 ms, since it also gets its own Docker network, the proxy joins it, and the CA is installed.
+
+The roadmap's kill criterion is gVisor being about 3x slower than runc on common tasks. Measured here: Python startup 14 ms under gVisor against 11 ms under runc, and `pip install requests` 2.0 s against 1.9 s. Syscall-heavy microbenchmarks (thousands of tiny files, process spawn loops) do show 3 to 4x, so the KVM platform above is worth registering on a host that has it.
+
+Why `/workspace` is a tmpfs and not a disk volume: one Python process writing and reading 3000 small files took 214 ms on tmpfs under gVisor and 353 ms on a Docker volume under gVisor (85 ms and 62 ms under plain runc). Files in RAM are the faster choice under gVisor, and the size limit is real; the cost is that `diskMb` is memory.
 
 ## What this is not
 

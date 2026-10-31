@@ -6,7 +6,7 @@ import { ConflictError, DomainError, LimitExceededError, NotFoundError, Unauthor
 import type { Sandbox } from "../models/sandbox.js";
 import type { SandboxService } from "../services/sandboxService.js";
 import { bearerAuth } from "./auth.js";
-import { parseCreateRequest, parseExecRequest } from "./validation.js";
+import { parseCreateRequest, parseExecRequest, parseExtendRequest } from "./validation.js";
 
 // The public shape of a sandbox: everything except runtime bookkeeping.
 function view(sandbox: Sandbox) {
@@ -102,6 +102,20 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
         await send("error", { error: known ? err.name : "InternalError", message: known ? err.message : "unexpected server error" });
       }
     });
+  });
+
+  app.post("/sandboxes/:id/extend", async (c) => c.json(view(service.extend(c.req.param("id"), parseExtendRequest(await jsonBody(c))))));
+
+  // Whole trees as tar archives, so a repository goes in or out in one request.
+  app.put("/sandboxes/:id/archive", async (c) => {
+    const tar = Buffer.from(await c.req.arrayBuffer());
+    const path = await service.putArchive(c.req.param("id"), c.req.query("path") ?? "/workspace", tar);
+    return c.json({ path, bytes: tar.length });
+  });
+
+  app.get("/sandboxes/:id/archive", async (c) => {
+    const tar = await service.getArchive(c.req.param("id"), c.req.query("path") ?? "/workspace");
+    return c.body(new Uint8Array(tar), 200, { "content-type": "application/x-tar" });
   });
 
   app.get("/sandboxes/:id/egress-log", async (c) => c.json(await service.egressLog(c.req.param("id"))));

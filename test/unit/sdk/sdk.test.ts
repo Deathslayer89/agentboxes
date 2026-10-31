@@ -56,6 +56,9 @@ test("create, exec, files, stream, destroy", async () => {
   assert.deepEqual(await box.readFileBytes("/workspace/bin"), new Uint8Array([0, 255]));
 
   // The fake runtime sends "ech", "o hi" and an empty stderr chunk; the SDK joins them into lines.
+  await box.uploadTar(new Uint8Array([1, 2, 3]), "incoming");
+  assert.deepEqual(await box.downloadTar("incoming"), new Uint8Array([1, 2, 3]));
+
   const events: ExecEvent[] = [];
   for await (const event of box.execStream(["echo", "hi"])) events.push(event);
   assert.deepEqual(events, [
@@ -70,6 +73,10 @@ test("create, exec, files, stream, destroy", async () => {
     { type: "stdout", text: " c" },
     { type: "exit", exitCode: 0, durationMs: 1, timedOut: false, truncated: false },
   ]);
+
+  const before = box.info.expiresAt;
+  await box.extend(1800);
+  assert.ok(new Date(box.info.expiresAt) > new Date(before));
 
   assert.equal((await agentbox.list()).length, 1);
   assert.equal((await agentbox.get(box.id)).info.status, "ready");

@@ -7,8 +7,10 @@ export interface Config {
   host: string;
   // A1: shared bearer token. Undefined means auth is off and host is forced to 127.0.0.1.
   apiKey: string | undefined;
-  // Image every sandbox starts from. Templates (Day 2) build FROM this.
+  // Image every sandbox starts from. Templates build FROM this.
   image: string;
+  // Docker runtime name. Must be runsc or a variant of it such as runsc-kvm; there is no runc option.
+  runtime: string;
   // Limits a sandbox gets when the request does not say otherwise.
   defaults: SandboxLimits;
   // Hard ceiling per sandbox so one caller cannot take the whole machine.
@@ -19,6 +21,8 @@ export interface Config {
   maxOutputBytes: number;
   // Largest file the files API will write or read.
   maxFileBytes: number;
+  // Largest tar archive the archive API will accept or produce.
+  maxArchiveBytes: number;
   // Cap on live sandboxes across all callers. Containers waiting in the warm pool do not count.
   maxSandboxes: number;
   // Warm pool size per template, for example { default: 3, "data-science": 2 }. 0 turns a pool off.
@@ -43,6 +47,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     host: apiKey === undefined ? "127.0.0.1" : env.HOST || "0.0.0.0",
     apiKey,
     image: env.AGENTBOX_IMAGE ?? "python:3.12-slim",
+    runtime: env.AGENTBOX_RUNTIME || "runsc",
     defaults: {
       memoryMb: num("DEFAULT_MEMORY_MB", 512),
       cpus: num("DEFAULT_CPUS", 1),
@@ -61,12 +66,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxExecTimeoutMs: num("MAX_EXEC_TIMEOUT_MS", 300_000),
     maxOutputBytes: num("MAX_OUTPUT_BYTES", 1_048_576),
     maxFileBytes: num("MAX_FILE_BYTES", 8 * 1_048_576),
+    maxArchiveBytes: num("MAX_ARCHIVE_BYTES", 256 * 1_048_576),
     maxSandboxes: num("MAX_SANDBOXES", 20),
     poolSizes: parsePoolSizes(env.POOL_SIZES),
     reaperIntervalMs: num("REAPER_INTERVAL_MS", 10_000),
     secretsEnv: env,
   };
 
+  if (!/^runsc(-[a-z0-9]+)?$/.test(config.runtime)) {
+    throw new Error(`AGENTBOX_RUNTIME must be runsc or a runsc variant such as runsc-kvm, got "${config.runtime}"`);
+  }
   // A default above its maximum would make every plain create() fail; catch that at boot.
   for (const key of Object.keys(config.maximums) as (keyof SandboxLimits)[]) {
     if (config.defaults[key] > config.maximums[key]) {
