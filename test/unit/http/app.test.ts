@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { FakeClock } from "./clock.js";
-import { loadConfig } from "./config.js";
-import { createApp, type AppOptions } from "./http/app.js";
-import { CounterIdGenerator } from "./id.js";
-import { InMemorySandboxRepository } from "./repositories/sandboxRepository.js";
-import { InMemoryTemplateRepository } from "./repositories/templateRepository.js";
-import { FakeRuntime } from "./runtime/fakeRuntime.js";
-import { SandboxService } from "./services/sandboxService.js";
-import { WarmPools } from "./services/warmPool.js";
+import { FakeClock } from "../../../src/clock.js";
+import { loadConfig } from "../../../src/config.js";
+import { createApp, type AppOptions } from "../../../src/http/app.js";
+import { CounterIdGenerator } from "../../../src/id.js";
+import { InMemorySandboxRepository } from "../../../src/repositories/sandboxRepository.js";
+import { InMemoryTemplateRepository } from "../../../src/repositories/templateRepository.js";
+import { FakeRuntime } from "../../../src/runtime/fakeRuntime.js";
+import { SandboxService } from "../../../src/services/sandboxService.js";
+import { WarmPools } from "../../../src/services/warmPool.js";
 
 // HTTP layer against the fake runtime: routes, status codes and auth, no Docker.
 function makeApp(options: AppOptions = {}, env: NodeJS.ProcessEnv = {}) {
@@ -130,4 +130,15 @@ test("GET /stats reports live sandboxes and the pool", async () => {
   const { app: locked } = makeApp({ apiKey: "k" });
   assert.equal((await locked.request("/stats")).status, 401);
   assert.equal((await locked.request("/templates")).status, 401);
+});
+
+test("egress log route and network in the view", async () => {
+  const { app } = makeApp({}, { OPENAI_API_KEY: "sk-test" });
+  const created = await app.request("/sandboxes", { method: "POST", body: JSON.stringify({ secrets: { "api.openai.com": "OPENAI_API_KEY" } }) });
+  assert.equal(created.status, 201);
+  const body = (await created.json()) as { id: string; network: unknown };
+  assert.deepEqual(body.network, { allowHosts: ["api.openai.com"], secretHosts: ["api.openai.com"] });
+  assert.deepEqual(await (await app.request(`/sandboxes/${body.id}/egress-log`)).json(), { allowHosts: ["api.openai.com"], denied: [] });
+  assert.equal((await app.request("/sandboxes", { method: "POST", body: JSON.stringify({ secrets: { "api.openai.com": "NOPE" } }) })).status, 400);
+  assert.equal((await app.request("/sandboxes", { method: "POST", body: JSON.stringify({ allowHosts: ["bad host"] }) })).status, 400);
 });

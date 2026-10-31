@@ -10,8 +10,8 @@ import { parseCreateRequest, parseExecRequest } from "./validation.js";
 
 // The public shape of a sandbox: everything except runtime bookkeeping.
 function view(sandbox: Sandbox) {
-  const { id, status, template, limits, startup, createdAt, expiresAt } = sandbox;
-  return { id, status, template, limits, startup, createdAt, expiresAt };
+  const { id, status, template, limits, network, startup, createdAt, expiresAt } = sandbox;
+  return { id, status, template, limits, network, startup, createdAt, expiresAt };
 }
 
 // Maps the error classes the service throws to HTTP status codes.
@@ -103,6 +103,8 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
       }
     });
   });
+
+  app.get("/sandboxes/:id/egress-log", async (c) => c.json(await service.egressLog(c.req.param("id"))));
 
   app.delete("/sandboxes/:id", async (c) => c.json(view(await service.destroy(c.req.param("id")))));
 

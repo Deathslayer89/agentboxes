@@ -11,8 +11,8 @@
     "agentbox": "tsx src/cli.ts",
     "example": "tsx examples/sdk-basic.ts",
     "build:sdk": "tsc -p sdk/tsconfig.json",
-    "test": "tsx --test src/*.test.ts",
-    "test:integration": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/unit/*/*.test.ts",
+    "test:integration": "tsx --test test/integration/*.test.ts"
   },
   "license": "MIT",
   "dependencies": {

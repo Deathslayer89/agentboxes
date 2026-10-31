@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { FakeClock } from "./clock.js";
-import { loadConfig } from "./config.js";
-import { ConflictError, LimitExceededError, NotFoundError, ValidationError } from "./errors.js";
-import { CounterIdGenerator } from "./id.js";
-import { InMemorySandboxRepository } from "./repositories/sandboxRepository.js";
-import { InMemoryTemplateRepository } from "./repositories/templateRepository.js";
-import { FakeRuntime } from "./runtime/fakeRuntime.js";
-import { SandboxService } from "./services/sandboxService.js";
-import { WarmPool, WarmPools } from "./services/warmPool.js";
+import { FakeClock } from "../../../src/clock.js";
+import { loadConfig } from "../../../src/config.js";
+import { ConflictError, LimitExceededError, NotFoundError, ValidationError } from "../../../src/errors.js";
+import { CounterIdGenerator } from "../../../src/id.js";
+import { InMemorySandboxRepository } from "../../../src/repositories/sandboxRepository.js";
+import { InMemoryTemplateRepository } from "../../../src/repositories/templateRepository.js";
+import { FakeRuntime } from "../../../src/runtime/fakeRuntime.js";
+import { SandboxService } from "../../../src/services/sandboxService.js";
+import { WarmPool, WarmPools } from "../../../src/services/warmPool.js";
 
 // Fresh service per test so tests never depend on each other. Pools are off unless a test sets POOL_SIZES.
 function makeService(env: NodeJS.ProcessEnv = {}) {
@@ -155,4 +155,23 @@ test("a template picks its image and its own pool; an unknown template is refuse
     { name: "default", image: "python:3.12-slim" },
     { name: "data-science", image: "agentbox/data-science:latest" },
   ]);
+});
+
+test("allowHosts and secrets become an egress policy; the value comes from the server env and never touches the record", async () => {
+  const { service, runtime, pools } = makeService({ POOL_SIZES: "default:1", OPENAI_API_KEY: "sk-test" });
+  await pools.fill();
+  const box = await service.create({ allowHosts: ["pypi.org"], secrets: { "api.openai.com": "OPENAI_API_KEY" } });
+  assert.equal(box.startup.source, "cold", "a sandbox with a network never comes from the pool");
+  assert.deepEqual(box.network, { allowHosts: ["pypi.org", "api.openai.com"], secretHosts: ["api.openai.com"] });
+  assert.deepEqual(runtime.containers.get(box.handle ?? "")?.egress, { allowHosts: ["pypi.org", "api.openai.com"], secrets: { "api.openai.com": "Bearer sk-test" } });
+  assert.equal(JSON.stringify(box).includes("sk-test"), false);
+  await assert.rejects(service.create({ secrets: { "api.openai.com": "MISSING_KEY" } }), /MISSING_KEY is not set/);
+  const plain = await service.create();
+  assert.equal(plain.network, undefined);
+  assert.equal(runtime.containers.get(plain.handle ?? "")?.egress, undefined);
+  assert.deepEqual(await service.egressLog(plain.id), { allowHosts: [], denied: [] });
+  runtime.deniedLogs.set(box.id, [{ at: "now", method: "CONNECT", host: "example.com", port: 443, reason: "host not in allowHosts" }]);
+  assert.equal((await service.egressLog(box.id)).denied.length, 1);
+  await service.destroy(box.id);
+  await assert.rejects(service.egressLog(box.id), ConflictError);
 });

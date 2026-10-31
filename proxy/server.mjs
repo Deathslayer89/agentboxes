@@ -20,6 +20,7 @@ const MAX_DENIED = 1000;
  * Every other allowed host is a plain tunnel the proxy cannot read.
  *
  * Options beyond adminToken exist for tests; main.mjs reads production values from the environment.
+ * @param {{ adminToken: string, host?: string, proxyPort?: number, controlPort?: number, allowPrivateTargets?: boolean, upstreamCa?: string }} options
  */
 export async function startProxy({ adminToken, host = "0.0.0.0", proxyPort = 0, controlPort = 0, allowPrivateTargets = false, upstreamCa = undefined }) {
   // sandboxId -> { token, allowHosts, secrets, denied }

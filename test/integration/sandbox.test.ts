@@ -9,18 +9,19 @@ import { join } from "node:path";
 import os from "node:os";
 import test, { after, before } from "node:test";
 import Docker from "dockerode";
-import { SystemClock } from "../src/clock.js";
-import { loadConfig } from "../src/config.js";
-import { RandomIdGenerator } from "../src/id.js";
-import { InMemorySandboxRepository } from "../src/repositories/sandboxRepository.js";
-import { DockerTemplateRepository } from "../src/repositories/templateRepository.js";
-import { GvisorDockerRuntime } from "../src/runtime/gvisorDockerRuntime.js";
-import { SandboxService } from "../src/services/sandboxService.js";
-import { WarmPool, WarmPools } from "../src/services/warmPool.js";
+import { SystemClock } from "../../src/clock.js";
+import { loadConfig } from "../../src/config.js";
+import { RandomIdGenerator } from "../../src/id.js";
+import { InMemorySandboxRepository } from "../../src/repositories/sandboxRepository.js";
+import { EgressProxyManager, LABEL_NETWORK } from "../../src/runtime/egressProxy.js";
+import { DockerTemplateRepository } from "../../src/repositories/templateRepository.js";
+import { GvisorDockerRuntime } from "../../src/runtime/gvisorDockerRuntime.js";
+import { SandboxService } from "../../src/services/sandboxService.js";
+import { WarmPool, WarmPools } from "../../src/services/warmPool.js";
 
 const config = loadConfig({ ...process.env, DEFAULT_TTL_SECONDS: "120" });
 const docker = new Docker();
-const runtime = new GvisorDockerRuntime(docker, config.image, config.maxOutputBytes, config.maxFileBytes);
+const runtime = new GvisorDockerRuntime(docker, config.image, config.maxOutputBytes, config.maxFileBytes, new EgressProxyManager(docker));
 const templates = new DockerTemplateRepository(docker);
 const service = new SandboxService(new InMemorySandboxRepository(), templates, runtime, config, new SystemClock(), new RandomIdGenerator("sbxtest_"), new WarmPools());
 
@@ -33,6 +34,7 @@ before(async () => {
 
 after(async () => {
   await service.destroy(id);
+  await runtime.shutdown();
 });
 
 const run = (cmd: string[], timeoutMs?: number) => service.exec(id, timeoutMs === undefined ? { cmd } : { cmd, timeoutMs });
@@ -172,5 +174,58 @@ test("F8/F9: a template built from a Dockerfile shows up in the list and its fil
   } finally {
     await docker.getImage("agentbox/inttest:latest").remove({ force: true }).catch(() => {});
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Needs internet access: the proxy fetches from pypi.org and httpbin.org.
+const fetchStatus = (svc: SandboxService, boxId: string, url: string) =>
+  svc.exec(boxId, { cmd: ["python", "-c", `import urllib.request\nprint(urllib.request.urlopen(${JSON.stringify(url)}, timeout=15).status)`], timeoutMs: 30_000 });
+
+test("N1/N2/N3: an allowlisted sandbox reaches only the listed hosts; refusals are logged; metadata and the host stay unreachable", async () => {
+  const box = await service.create({ allowHosts: ["pypi.org", "files.pythonhosted.org", "169.254.169.254"] });
+  try {
+    assert.equal(box.startup.source, "cold");
+    assert.deepEqual(box.network, { allowHosts: ["pypi.org", "files.pythonhosted.org", "169.254.169.254"], secretHosts: [] });
+    const ok = await fetchStatus(service, box.id, "https://pypi.org/simple/pip/");
+    assert.equal(ok.stdout.trim(), "200", ok.stderr);
+    assert.notEqual((await fetchStatus(service, box.id, "https://example.com/")).exitCode, 0, "example.com is not allowlisted");
+    assert.notEqual((await fetchStatus(service, box.id, "http://169.254.169.254/latest/meta-data/")).exitCode, 0, "metadata is blocked even though allowlisted");
+    const pip = await service.exec(box.id, { cmd: ["pip", "download", "--no-deps", "-q", "-d", "/tmp/dl", "six"], timeoutMs: 120_000 });
+    assert.equal(pip.exitCode, 0, pip.stderr);
+    const toHost = await service.exec(box.id, { cmd: ["python", "-c", "import socket\nsocket.create_connection(('172.17.0.1', 7788), timeout=3)"] });
+    assert.notEqual(toHost.exitCode, 0, "the docker bridge address of the host is not reachable");
+    const log = await service.egressLog(box.id);
+    assert.deepEqual(
+      log.denied.map((d) => [d.method, d.host, d.reason]),
+      [
+        ["CONNECT", "example.com", "host not in allowHosts"],
+        ["GET", "169.254.169.254", "resolves to a private address (169.254.169.254)"],
+      ],
+    );
+  } finally {
+    await service.destroy(box.id);
+  }
+  const networks = await docker.listNetworks({ filters: { label: [LABEL_NETWORK] } });
+  assert.equal(networks.some((n) => n.Name === `agentbox-${box.id}`), false, "the sandbox's network is removed with it");
+});
+
+test("K1: the proxy adds the secret for its host, and the secret is nowhere inside the sandbox", async () => {
+  const secretConfig = loadConfig({ ...process.env, DEFAULT_TTL_SECONDS: "120", TEST_API_KEY: "hunter2-never-inside" });
+  const withSecret = new SandboxService(new InMemorySandboxRepository(), templates, runtime, secretConfig, new SystemClock(), new RandomIdGenerator("sbxsec_"), new WarmPools());
+  const box = await withSecret.create({ secrets: { "httpbin.org": "TEST_API_KEY" } });
+  try {
+    assert.deepEqual(box.network, { allowHosts: ["httpbin.org"], secretHosts: ["httpbin.org"] });
+    const script = `import urllib.request
+req = urllib.request.Request("https://httpbin.org/headers", headers={"Authorization": "Bearer from-inside"})
+print(urllib.request.urlopen(req, timeout=20).read().decode())`;
+    const r = await withSecret.exec(box.id, { cmd: ["python", "-c", script], timeoutMs: 30_000 });
+    assert.equal(r.exitCode, 0, r.stderr);
+    assert.match(r.stdout, /"Authorization": "Bearer hunter2-never-inside"/);
+    assert.doesNotMatch(r.stdout, /from-inside/);
+    const inside = await withSecret.exec(box.id, { cmd: ["sh", "-c", "env; cat /proc/1/environ; grep -rs hunter2 /workspace /tmp /etc /proc/self/environ; true"] });
+    assert.doesNotMatch(inside.stdout, /hunter2/);
+    assert.match(inside.stdout, /HTTPS_PROXY=http:\/\/sbxsec_/);
+  } finally {
+    await withSecret.destroy(box.id);
   }
 });

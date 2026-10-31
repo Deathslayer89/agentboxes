@@ -2,11 +2,11 @@
 
 Self-hosted sandboxes for AI agents. Runs on any Linux box with Docker and gVisor; no KVM needed.
 
-Status: v0.1 in progress. Create, exec, streaming exec, files, warm pool, templates, TTL reaper, API key and the TypeScript SDK are here. The egress proxy, secrets and the MCP server come next.
+Status: v0.1 in progress. Create, exec, streaming exec, files, warm pool, templates, TTL reaper, API key, TypeScript SDK, the network allowlist and secret injection are here. The MCP server, the benchmark script and the threat model come next.
 
 ## Requirements
 
-- Linux, Docker 20+, Node 20+
+- Linux, Docker 20+ (28+ for the network allowlist), Node 20+
 - gVisor registered with Docker as the `runsc` runtime. The server refuses to start without it.
 
 Install gVisor on Ubuntu or Debian:
@@ -66,6 +66,32 @@ Sandboxes expire after `ttlSeconds` (default 600, max 3600). A reaper removes ex
 
 The server keeps default-sized containers started ahead of time, one pool per template, sized by `POOL_SIZES` (default `default:3`). A create request whose memory, cpus, disk and pids match the defaults takes one from its template's pool; `startup.source` says `pool` and `startup.ms` is the server-side time to ready. Any other size, or a template without a pool, starts a fresh container (`cold`), which takes Docker plus gVisor start time. Each pooled container is used once and destroyed with its sandbox; a background loop refills the pool. Pool containers do not count towards `MAX_SANDBOXES`. `GET /stats` shows size, ready, starting, hits and misses per pool.
 
+## Network: off by default, an allowlist per sandbox
+
+A sandbox has no network unless the request names hosts it may reach:
+
+```bash
+curl -s -X POST localhost:7788/sandboxes -d '{"allowHosts":["pypi.org","files.pythonhosted.org"]}'
+curl -s -X POST localhost:7788/sandboxes/sbx_.../exec -d '{"cmd":["pip","download","--no-deps","-d","/tmp/dl","six"],"timeoutMs":120000}'
+curl -s localhost:7788/sandboxes/sbx_.../egress-log
+# {"allowHosts":["pypi.org","files.pythonhosted.org"],"denied":[{"at":"...","method":"CONNECT","host":"example.com","port":443,"reason":"host not in allowHosts"}]}
+```
+
+How it works: such a sandbox gets its own internal Docker network with an isolated gateway (Docker 28+), so the only thing it can reach is the egress proxy container, not the internet and not the host. Inside, `HTTP_PROXY` and `HTTPS_PROXY` point at the proxy with a token that identifies the sandbox. The proxy lets allowlisted hosts through and refuses everything else with a 403, recording each refusal in the egress log. Hosts that resolve to loopback, link-local (the cloud metadata address `169.254.169.254`), private or multicast addresses are refused even when allowlisted. `*.example.com` in the allowlist matches subdomains.
+
+pip, curl, git, npm, and Python's `urllib` and `requests` honour the proxy variables. Node's built-in `fetch` does not; use `NODE_USE_ENV_PROXY=1` on Node 24+ or undici's `EnvHttpProxyAgent`. Installing packages at run time this way is the slow path; use a template for anything you need more than once.
+
+A sandbox with a network always starts cold, since pooled containers have no network. The proxy container (`agentbox-egress-proxy`) is built from `proxy/` on the first start and runs under runc, not gVisor, because gVisor does not pick up networks connected after start; it runs as a non-root user with all capabilities dropped, a read-only root and a 256 MB limit.
+
+## Secrets that never enter the sandbox
+
+```bash
+OPENAI_API_KEY=sk-... npm start
+curl -s -X POST localhost:7788/sandboxes -d '{"secrets":{"api.openai.com":"OPENAI_API_KEY"}}'
+```
+
+The value of `OPENAI_API_KEY` is read from the server's environment and given only to the proxy. The host is allowlisted automatically. For that host the proxy terminates TLS with a certificate from its own CA, replaces whatever `Authorization` header the sandbox sent with `Bearer <value>`, and opens its own TLS connection upstream. The CA is written into the sandbox at `/tmp/agentbox` and named by `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `PIP_CERT` and `NODE_EXTRA_CA_CERTS`, alongside the image's normal bundle. Hosts without a secret are plain tunnels the proxy cannot read. The integration test for this fetches `https://httpbin.org/headers` from inside a sandbox, sees the secret in the echoed headers, and greps the sandbox's environment and filesystem to confirm the value is not there.
+
 ## TypeScript SDK
 
 The client in `sdk/` has no dependencies and needs Node 20+. It is not on npm yet; until then import it from the repo or build it with `npm run build:sdk`.
@@ -74,7 +100,7 @@ The client in `sdk/` has no dependencies and needs Node 20+. It is not on npm ye
 import { Agentbox, ExecTimeout } from "agentbox";
 
 const agentbox = new Agentbox({ baseUrl: "http://127.0.0.1:7788", apiKey: process.env.AGENTBOX_API_KEY });
-const box = await agentbox.create({ template: "default", ttlSeconds: 300 });
+const box = await agentbox.create({ template: "default", ttlSeconds: 300, allowHosts: ["pypi.org"] });
 
 const r = await box.exec(["python", "-c", "print(2+2)"]);        // { exitCode, stdout, stderr, durationMs, truncated }
 await box.writeFile("main.py", "print('hello')");
@@ -115,7 +141,7 @@ Installing packages at run time (`pip install` inside a sandbox) fails today bec
 | | Default | Env var |
 |---|---|---|
 | Runtime | gVisor (`runsc`), not configurable | |
-| Network | none | |
+| Network | none, or an allowlist through the egress proxy | |
 | Memory | 512 MB, no swap | `DEFAULT_MEMORY_MB`, `MAX_MEMORY_MB` |
 | CPUs | 1 | `DEFAULT_CPUS`, `MAX_CPUS` |
 | `/workspace` tmpfs | 1024 MB | `DEFAULT_DISK_MB`, `MAX_DISK_MB` |
@@ -131,9 +157,11 @@ Other settings: `PORT` (7788), `HOST`, `AGENTBOX_API_KEY`, `AGENTBOX_IMAGE` (`py
 ## Tests
 
 ```bash
-npm test                  # unit tests, no Docker needed
-npm run test:integration  # needs Docker + runsc; checks each isolation default from inside a sandbox
+npm test                  # unit tests under test/unit, no Docker needed
+npm run test:integration  # test/integration: needs Docker, runsc and internet; checks each isolation default from inside a sandbox
 ```
+
+Tests live in `test/unit/<area>/` mirroring `src/`, plus `test/unit/proxy` and `test/unit/sdk`, and in `test/integration/`. Do not run the integration tests while a server is running on the same Docker: both own the proxy container and the reaper would remove each other's containers.
 
 ## Layout
 
@@ -144,4 +172,7 @@ src/runtime/       SandboxRuntime interface and the gVisor-on-Docker implementat
 src/services/      SandboxService (create, exec, files, destroy, reap) and the warm pools
 src/http/          routes, auth and request parsing
 src/cli.ts         `agentbox template build | list`
+proxy/             the egress proxy (plain Node, no dependencies) and its Dockerfile
+sdk/               the TypeScript client
+test/              unit tests by area, and integration tests against real gVisor
 ```

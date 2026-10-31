@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ValidationError } from "./errors.js";
-import { resolveWorkspacePath } from "./services/workspacePath.js";
+import { ValidationError } from "../../../src/errors.js";
+import { resolveWorkspacePath } from "../../../src/services/workspacePath.js";
 
 test("relative and absolute paths inside /workspace resolve to the same absolute path", () => {
   assert.equal(resolveWorkspacePath("main.py"), "/workspace/main.py");

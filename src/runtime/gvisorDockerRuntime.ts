@@ -2,7 +2,8 @@ import Docker from "dockerode";
 import { Writable } from "node:stream";
 import { ConflictError, NotFoundError, RuntimeUnavailableError, ValidationError } from "../errors.js";
 import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
-import type { OutputListener, SandboxRuntime } from "./sandboxRuntime.js";
+import { CA_DIR, type EgressAttachment, type EgressProxyManager } from "./egressProxy.js";
+import type { DeniedRequest, EgressPolicy, OutputListener, SandboxRuntime } from "./sandboxRuntime.js";
 
 // Docker runtime name for gVisor. Not configurable: there is no fallback to runc.
 const RUNTIME = "runsc";
@@ -16,6 +17,8 @@ const SANDBOX_USER = `${SANDBOX_UID}:${SANDBOX_UID}`;
  */
 const LABEL = "agentbox";
 const LABEL_ID = "agentbox.id";
+// "1" on containers that have their own network, so destroy() knows to remove it.
+const LABEL_NETWORKED = "agentbox.networked";
 /**
  * If the in-sandbox `timeout` has not ended the exec this long after its deadline,
  * kill the whole container.
@@ -49,6 +52,7 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     private readonly image: string,
     private readonly maxOutputBytes: number,
     private readonly maxFileBytes: number,
+    private readonly egress: EgressProxyManager,
   ) {}
 
   async init(): Promise<void> {
@@ -64,6 +68,8 @@ export class GvisorDockerRuntime implements SandboxRuntime {
       );
     }
     await this.ensureImage();
+    await this.egress.init();
+    if (!this.egress.available) console.log(`agentbox: network allowlist is off: ${this.egress.unavailableReason}`);
   }
 
   private async ensureImage(): Promise<void> {
@@ -80,7 +86,21 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     });
   }
 
-  async start(sandboxId: string, limits: SandboxLimits, image: string): Promise<string> {
+  async start(sandboxId: string, limits: SandboxLimits, image: string, egress?: EgressPolicy): Promise<string> {
+    let attachment: EgressAttachment | undefined;
+    if (egress !== undefined) {
+      if (!this.egress.available) throw new ValidationError(`allowHosts is not available: ${this.egress.unavailableReason}`);
+      attachment = await this.egress.attach(sandboxId, egress);
+    }
+    try {
+      return await this.createAndStart(sandboxId, limits, image, attachment);
+    } catch (e) {
+      if (attachment !== undefined) await this.egress.detach(sandboxId).catch(() => {});
+      throw e;
+    }
+  }
+
+  private async createAndStart(sandboxId: string, limits: SandboxLimits, image: string, attachment: EgressAttachment | undefined): Promise<string> {
     const container = await this.docker.createContainer({
       Image: image,
       // PID 1 only sleeps; every command runs through `docker exec`, so one sandbox can run many commands.
@@ -91,11 +111,12 @@ export class GvisorDockerRuntime implements SandboxRuntime {
       Env: [
         `HOME=${WORKSPACE}`, // pip and similar tools write their caches under the writable workspace
         "PYTHONUNBUFFERED=1", // python output arrives line by line instead of at exit
+        ...(attachment?.env ?? []),
       ],
-      Labels: { [LABEL]: "1", [LABEL_ID]: sandboxId },
+      Labels: { [LABEL]: "1", [LABEL_ID]: sandboxId, [LABEL_NETWORKED]: attachment === undefined ? "0" : "1" },
       HostConfig: {
         Runtime: RUNTIME, // S1: gVisor
-        NetworkMode: "none", // S2: no network
+        NetworkMode: attachment?.network ?? "none", // S2: no network, or only the sandbox's own network to the proxy
         Memory: limits.memoryMb * MB, // S3: limits
         MemorySwap: limits.memoryMb * MB, // equal to Memory means no swap
         NanoCpus: Math.round(limits.cpus * 1e9),
@@ -113,11 +134,27 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     });
     try {
       await container.start();
+      if (attachment?.caPem !== undefined) await this.installCa(container.id, attachment.caPem);
     } catch (e) {
       await container.remove({ force: true }).catch(() => {});
       throw e;
     }
     return container.id;
+  }
+
+  // Writes the proxy's CA into the sandbox and appends it to the image's bundle, so clients trust intercepted hosts.
+  private async installCa(handle: string, caPem: string): Promise<void> {
+    const script = `mkdir -p ${CA_DIR} && cat > ${CA_DIR}/ca.pem && { cat /etc/ssl/certs/ca-certificates.crt ${CA_DIR}/ca.pem > ${CA_DIR}/bundle.pem 2>/dev/null || cp ${CA_DIR}/ca.pem ${CA_DIR}/bundle.pem; }`;
+    const r = await this.run(handle, ["sh", "-c", script], FILE_TIMEOUT_MS, { stdin: Buffer.from(caPem) });
+    if (r.exitCode !== 0) throw new Error(`could not install the proxy CA: ${r.stderr.toString("utf8").trim()}`);
+  }
+
+  async egressLog(sandboxId: string): Promise<DeniedRequest[]> {
+    return this.egress.deniedLog(sandboxId);
+  }
+
+  async shutdown(): Promise<void> {
+    await this.egress.shutdown();
   }
 
   async exec(handle: string, cmd: string[], timeoutMs: number, onOutput?: OutputListener): Promise<ExecResult> {
@@ -149,12 +186,18 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     return r.stdout;
   }
 
+  // Removes the container, then its own network if it had one.
   async destroy(handle: string): Promise<void> {
+    const container = this.docker.getContainer(handle);
+    let labels: Record<string, string>;
     try {
-      await this.docker.getContainer(handle).remove({ force: true, v: true });
+      labels = ((await container.inspect()) as { Config: { Labels: Record<string, string> } }).Config.Labels;
+      await container.remove({ force: true, v: true });
     } catch (e) {
       if (!isNotFound(e)) throw e;
+      return;
     }
+    if (labels[LABEL_NETWORKED] === "1") await this.egress.detach(labels[LABEL_ID] ?? "");
   }
 
   async listManaged(): Promise<Array<{ sandboxId: string; handle: string }>> {

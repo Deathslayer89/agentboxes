@@ -7,6 +7,7 @@ import { createApp } from "./http/app.js";
 import { RandomIdGenerator } from "./id.js";
 import { DEFAULT_TEMPLATE } from "./models/template.js";
 import { InMemorySandboxRepository } from "./repositories/sandboxRepository.js";
+import { EgressProxyManager } from "./runtime/egressProxy.js";
 import { DockerTemplateRepository } from "./repositories/templateRepository.js";
 import { GvisorDockerRuntime } from "./runtime/gvisorDockerRuntime.js";
 import { SandboxService } from "./services/sandboxService.js";
@@ -14,7 +15,7 @@ import { WarmPool, WarmPools } from "./services/warmPool.js";
 
 const config = loadConfig();
 const docker = new Docker();
-const runtime = new GvisorDockerRuntime(docker, config.image, config.maxOutputBytes, config.maxFileBytes);
+const runtime = new GvisorDockerRuntime(docker, config.image, config.maxOutputBytes, config.maxFileBytes, new EgressProxyManager(docker));
 const templates = new DockerTemplateRepository(docker);
 
 // Refuse to start without gVisor instead of silently running on runc.
@@ -83,6 +84,7 @@ async function shutdown(signal: string): Promise<void> {
   clearInterval(reaper);
   server.close();
   await Promise.all([pools.drain(), ...service.list().map((s) => service.destroy(s.id).catch(() => {}))]);
+  await runtime.shutdown();
   process.exit(0);
 }
 process.once("SIGINT", () => void shutdown("SIGINT"));

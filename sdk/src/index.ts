@@ -10,6 +10,23 @@ export interface SandboxLimits {
 
 export interface CreateOptions extends Partial<SandboxLimits> {
   template?: string;
+  // Host names the sandbox may reach through the egress proxy; "*.example.com" matches subdomains.
+  allowHosts?: string[];
+  // host -> name of an environment variable on the server, sent by the proxy as "Authorization: Bearer <value>".
+  secrets?: Record<string, string>;
+}
+
+export interface SandboxNetwork {
+  allowHosts: string[];
+  secretHosts: string[];
+}
+
+export interface DeniedRequest {
+  at: string;
+  method: string;
+  host: string;
+  port: number;
+  reason: string;
 }
 
 export interface SandboxInfo {
@@ -17,6 +34,7 @@ export interface SandboxInfo {
   status: "starting" | "ready" | "busy" | "expired" | "destroyed";
   template: string;
   limits: SandboxLimits;
+  network?: SandboxNetwork;
   startup: { source: "pool" | "cold"; ms: number };
   createdAt: string;
   expiresAt: string;
@@ -206,6 +224,11 @@ export class Sandbox {
   async readFileBytes(path: string): Promise<Uint8Array> {
     const res = await this.client.request("GET", `/sandboxes/${this.id}/files?path=${encodeURIComponent(path)}`);
     return new Uint8Array(await res.arrayBuffer());
+  }
+
+  // Outbound requests the proxy refused, with the allowlist in force.
+  async egressLog(): Promise<{ allowHosts: string[]; denied: DeniedRequest[] }> {
+    return (await this.client.json("GET", `/sandboxes/${this.id}/egress-log`)) as { allowHosts: string[]; denied: DeniedRequest[] };
   }
 
   // Re-reads the sandbox record from the server (status, expiry).

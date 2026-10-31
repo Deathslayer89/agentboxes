@@ -3,6 +3,20 @@ import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
 // Receives output chunks as they arrive, before the command finishes.
 export type OutputListener = (stream: "stdout" | "stderr", chunk: Buffer) => void;
 
+// What the egress proxy enforces for one sandbox. Secret values are full header values, for example "Bearer sk-...".
+export interface EgressPolicy {
+  allowHosts: string[];
+  secrets: Record<string, string>;
+}
+
+export interface DeniedRequest {
+  at: string;
+  method: string;
+  host: string;
+  port: number;
+  reason: string;
+}
+
 /**
  * What the service needs from an isolation backend. gVisor on Docker is the only
  * implementation in v0.1; Firecracker can be added later behind the same interface.
@@ -14,8 +28,14 @@ export interface SandboxRuntime {
    */
   init(): Promise<void>;
 
-  // Start an isolated container from `image` for a sandbox. Returns an opaque handle (the container id).
-  start(sandboxId: string, limits: SandboxLimits, image: string): Promise<string>;
+  /**
+   * Start an isolated container from `image` for a sandbox. Returns an opaque handle (the container id).
+   * Without `egress` the container has no network at all; with it, only the egress proxy is reachable.
+   */
+  start(sandboxId: string, limits: SandboxLimits, image: string, egress?: EgressPolicy): Promise<string>;
+
+  // Outbound requests the proxy refused for this sandbox. Empty for a sandbox without a network.
+  egressLog(sandboxId: string): Promise<DeniedRequest[]>;
 
   /**
    * Run one command inside the sandbox and wait for it. Must kill it at timeoutMs.
@@ -40,4 +60,7 @@ export interface SandboxRuntime {
    * orphans (containers the server no longer knows about, for example after a restart).
    */
   listManaged(): Promise<Array<{ sandboxId: string; handle: string }>>;
+
+  // Stop anything the backend runs for itself, such as the egress proxy. Called once at shutdown.
+  shutdown(): Promise<void>;
 }

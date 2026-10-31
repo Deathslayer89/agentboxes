@@ -19,11 +19,19 @@ export interface Startup {
   ms: number;
 }
 
+// What a sandbox may reach. Secret hosts are listed by name only; the values never leave the server and the proxy.
+export interface SandboxNetwork {
+  allowHosts: string[];
+  secretHosts: string[];
+}
+
 export interface Sandbox {
   id: string;
   status: SandboxStatus;
   template: string;
   limits: SandboxLimits;
+  // Undefined means no network at all.
+  network: SandboxNetwork | undefined;
   startup: Startup;
   createdAt: Date;
   expiresAt: Date;
@@ -36,7 +44,13 @@ export interface Sandbox {
   activeExecs: number;
 }
 
-export type CreateSandboxRequest = Partial<SandboxLimits> & { template?: string };
+export type CreateSandboxRequest = Partial<SandboxLimits> & {
+  template?: string;
+  // Host names the sandbox may reach through the egress proxy. "*.example.com" matches subdomains.
+  allowHosts?: string[];
+  // host -> name of a server environment variable whose value the proxy sends as "Authorization: Bearer <value>".
+  secrets?: Record<string, string>;
+};
 
 export interface ExecRequest {
   cmd: string[];

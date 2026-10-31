@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loadConfig } from "./config.js";
-import { FakeRuntime } from "./runtime/fakeRuntime.js";
-import { WarmPool } from "./services/warmPool.js";
+import { loadConfig } from "../../../src/config.js";
+import { FakeRuntime } from "../../../src/runtime/fakeRuntime.js";
+import { WarmPool } from "../../../src/services/warmPool.js";
 
 const limits = loadConfig({}).defaults;
 

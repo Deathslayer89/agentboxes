@@ -1,11 +1,13 @@
 import { ConflictError, NotFoundError } from "../errors.js";
 import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
-import type { OutputListener, SandboxRuntime } from "./sandboxRuntime.js";
+import type { DeniedRequest, EgressPolicy, OutputListener, SandboxRuntime } from "./sandboxRuntime.js";
 
 // In-memory stand-in for tests: no Docker, no gVisor. Records what the service asked for.
 export class FakeRuntime implements SandboxRuntime {
   // handle -> what was started
-  readonly containers = new Map<string, { sandboxId: string; limits: SandboxLimits; image: string; files: Map<string, Buffer> }>();
+  readonly containers = new Map<string, { sandboxId: string; limits: SandboxLimits; image: string; egress: EgressPolicy | undefined; files: Map<string, Buffer> }>();
+  // sandboxId -> denied requests the fake "proxy" reports
+  readonly deniedLogs = new Map<string, DeniedRequest[]>();
   readonly execCalls: Array<{ handle: string; cmd: string[]; timeoutMs: number }> = [];
   // When set, the next start() throws this instead of starting a container.
   startError: Error | undefined;
@@ -15,7 +17,7 @@ export class FakeRuntime implements SandboxRuntime {
 
   async init(): Promise<void> {}
 
-  async start(sandboxId: string, limits: SandboxLimits, image: string): Promise<string> {
+  async start(sandboxId: string, limits: SandboxLimits, image: string, egress?: EgressPolicy): Promise<string> {
     if (this.startError !== undefined) {
       const error = this.startError;
       this.startError = undefined;
@@ -23,9 +25,15 @@ export class FakeRuntime implements SandboxRuntime {
     }
     this.counter += 1;
     const handle = `ctr-${this.counter}`;
-    this.containers.set(handle, { sandboxId, limits, image, files: new Map() });
+    this.containers.set(handle, { sandboxId, limits, image, egress, files: new Map() });
     return handle;
   }
+
+  async egressLog(sandboxId: string): Promise<DeniedRequest[]> {
+    return this.deniedLogs.get(sandboxId) ?? [];
+  }
+
+  async shutdown(): Promise<void> {}
 
   // Echoes the command back on stdout, in two chunks so streaming tests see more than one.
   async exec(handle: string, cmd: string[], timeoutMs: number, onOutput?: OutputListener): Promise<ExecResult> {

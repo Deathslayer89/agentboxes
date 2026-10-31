@@ -24,6 +24,8 @@ export interface Config {
   // Warm pool size per template, for example { default: 3, "data-science": 2 }. 0 turns a pool off.
   poolSizes: Record<string, number>;
   reaperIntervalMs: number;
+  // Where `secrets: { host: ENV_NAME }` values are read from. Never passed into a sandbox.
+  secretsEnv: NodeJS.ProcessEnv;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -62,6 +64,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxSandboxes: num("MAX_SANDBOXES", 20),
     poolSizes: parsePoolSizes(env.POOL_SIZES),
     reaperIntervalMs: num("REAPER_INTERVAL_MS", 10_000),
+    secretsEnv: env,
   };
 
   // A default above its maximum would make every plain create() fail; catch that at boot.

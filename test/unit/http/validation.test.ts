@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ValidationError } from "./errors.js";
-import { parseCreateRequest, parseExecRequest } from "./http/validation.js";
+import { ValidationError } from "../../../src/errors.js";
+import { parseCreateRequest, parseExecRequest } from "../../../src/http/validation.js";
 
 test("create request: empty body means defaults, known numeric fields are kept", () => {
   assert.deepEqual(parseCreateRequest(undefined), {});
@@ -32,4 +32,15 @@ test("exec request: cmd must be a non-empty string array, timeoutMs optional", (
   assert.throws(() => parseExecRequest({ cmd: "python" }), ValidationError);
   assert.throws(() => parseExecRequest({ cmd: ["python", 1] }), ValidationError);
   assert.throws(() => parseExecRequest({ cmd: ["true"], timeoutMs: 0 }), ValidationError);
+});
+
+test("create request: allowHosts and secrets are checked and lowercased", () => {
+  assert.deepEqual(parseCreateRequest({ allowHosts: ["PyPI.org", "*.example.com", "10.0.0.1"] }), { allowHosts: ["pypi.org", "*.example.com", "10.0.0.1"] });
+  assert.deepEqual(parseCreateRequest({ secrets: { "API.openai.com": "OPENAI_API_KEY" } }), { secrets: { "api.openai.com": "OPENAI_API_KEY" } });
+  for (const bad of [{ allowHosts: "pypi.org" }, { allowHosts: ["not a host"] }, { allowHosts: ["http://pypi.org"] }, { allowHosts: [1] }]) {
+    assert.throws(() => parseCreateRequest(bad), ValidationError, JSON.stringify(bad));
+  }
+  for (const bad of [{ secrets: [] }, { secrets: { "*.openai.com": "KEY" } }, { secrets: { "api.openai.com": "lowercase" } }, { secrets: { "api.openai.com": 1 } }]) {
+    assert.throws(() => parseCreateRequest(bad), ValidationError, JSON.stringify(bad));
+  }
 });

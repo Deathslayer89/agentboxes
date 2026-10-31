@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loadConfig, parsePoolSizes } from "./config.js";
+import { loadConfig, parsePoolSizes } from "../../../src/config.js";
 
 test("POOL_SIZES parses name:count pairs and defaults to one default pool of 3", () => {
   assert.deepEqual(parsePoolSizes(undefined), { default: 3 });

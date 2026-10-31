@@ -5,8 +5,8 @@ import https from "node:https";
 import type net from "node:net";
 import tls from "node:tls";
 import test, { after, before } from "node:test";
-import { createCa, issueCert } from "../proxy/certs.mjs";
-import { startProxy } from "../proxy/server.mjs";
+import { createCa, issueCert } from "../../../proxy/certs.mjs";
+import { startProxy } from "../../../proxy/server.mjs";
 
 // The proxy on loopback with allowPrivateTargets, so a local echo server can stand in for the internet.
 const hasOpenssl = spawnSync("openssl", ["version"]).status === 0;

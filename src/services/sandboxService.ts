@@ -2,11 +2,11 @@ import type { Clock } from "../clock.js";
 import type { Config } from "../config.js";
 import { ConflictError, LimitExceededError, NotFoundError, ValidationError } from "../errors.js";
 import type { IdGenerator } from "../id.js";
-import { isGone, type CreateSandboxRequest, type ExecRequest, type ExecResult, type Sandbox, type SandboxLimits } from "../models/sandbox.js";
+import { isGone, type CreateSandboxRequest, type ExecRequest, type ExecResult, type Sandbox, type SandboxLimits, type SandboxNetwork } from "../models/sandbox.js";
 import { DEFAULT_TEMPLATE, type Template } from "../models/template.js";
 import type { SandboxRepository } from "../repositories/sandboxRepository.js";
 import type { TemplateRepository } from "../repositories/templateRepository.js";
-import type { OutputListener, SandboxRuntime } from "../runtime/sandboxRuntime.js";
+import type { DeniedRequest, EgressPolicy, OutputListener, SandboxRuntime } from "../runtime/sandboxRuntime.js";
 import type { PoolStats, WarmPools } from "./warmPool.js";
 import { resolveWorkspacePath } from "./workspacePath.js";
 
@@ -33,6 +33,7 @@ export class SandboxService {
       throw new LimitExceededError(`server limit of ${this.config.maxSandboxes} live sandboxes reached`);
     }
     const template = request.template ?? DEFAULT_TEMPLATE;
+    const egress = this.egressFor(request);
     const startedAt = performance.now();
     const now = this.clock.now();
     const sandbox: Sandbox = {
@@ -40,6 +41,7 @@ export class SandboxService {
       status: "starting",
       template,
       limits,
+      network: egress?.network,
       startup: { source: "cold", ms: 0 },
       createdAt: now,
       expiresAt: new Date(now.getTime() + limits.ttlSeconds * 1000),
@@ -49,12 +51,13 @@ export class SandboxService {
     // Saved before the container exists so the reaper never mistakes it for an orphan.
     this.sandboxes.save(sandbox);
     try {
-      const pooled = this.poolable(limits) ? this.pools.claim(template) : undefined;
+      // Pooled containers have no network, so a sandbox with a network always starts cold.
+      const pooled = egress === undefined && this.poolable(limits) ? this.pools.claim(template) : undefined;
       if (pooled !== undefined) {
         sandbox.handle = pooled;
         sandbox.startup.source = "pool";
       } else {
-        sandbox.handle = await this.runtime.start(sandbox.id, limits, await this.imageFor(template));
+        sandbox.handle = await this.runtime.start(sandbox.id, limits, await this.imageFor(template), egress?.policy);
       }
     } catch (e) {
       this.sandboxes.delete(sandbox.id);
@@ -71,6 +74,31 @@ export class SandboxService {
     sandbox.status = "ready";
     this.sandboxes.save(sandbox);
     return sandbox;
+  }
+
+  // Requests the proxy refused. A sandbox without a network has nothing to report.
+  async egressLog(id: string): Promise<{ allowHosts: string[]; denied: DeniedRequest[] }> {
+    const sandbox = this.get(id);
+    if (sandbox.network === undefined) return { allowHosts: [], denied: [] };
+    if (isGone(sandbox)) throw new ConflictError(`sandbox ${id} is ${sandbox.status}`);
+    return { allowHosts: sandbox.network.allowHosts, denied: await this.runtime.egressLog(id) };
+  }
+
+  /**
+   * Turns allowHosts and secrets into what the proxy enforces. Secret values come from the
+   * server's environment and go only to the proxy; the record keeps host names alone.
+   */
+  private egressFor(request: CreateSandboxRequest): { policy: EgressPolicy; network: SandboxNetwork } | undefined {
+    if (request.allowHosts === undefined && request.secrets === undefined) return undefined;
+    const secrets: Record<string, string> = {};
+    for (const [host, envName] of Object.entries(request.secrets ?? {})) {
+      const value = this.config.secretsEnv[envName];
+      if (value === undefined || value === "") throw new ValidationError(`secret for ${host}: ${envName} is not set in the server's environment`);
+      secrets[host] = `Bearer ${value}`;
+    }
+    // A host with a secret is allowed without listing it twice.
+    const allowHosts = [...new Set([...(request.allowHosts ?? []), ...Object.keys(secrets)])];
+    return { policy: { allowHosts, secrets }, network: { allowHosts, secretHosts: Object.keys(secrets) } };
   }
 
   stats(): { sandboxes: { live: number; max: number }; pools: Record<string, PoolStats> } {

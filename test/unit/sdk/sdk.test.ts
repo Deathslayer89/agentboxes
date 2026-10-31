@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 import { serve, type ServerType } from "@hono/node-server";
-import { Agentbox, AgentboxError, ExecTimeout, PoolExhausted, SandboxNotFound, type ExecEvent } from "../sdk/src/index.js";
-import { FakeClock } from "./clock.js";
-import { loadConfig } from "./config.js";
-import { createApp } from "./http/app.js";
-import { CounterIdGenerator } from "./id.js";
-import { InMemorySandboxRepository } from "./repositories/sandboxRepository.js";
-import { InMemoryTemplateRepository } from "./repositories/templateRepository.js";
-import { FakeRuntime } from "./runtime/fakeRuntime.js";
-import { SandboxService } from "./services/sandboxService.js";
-import { WarmPools } from "./services/warmPool.js";
+import { Agentbox, AgentboxError, ExecTimeout, PoolExhausted, SandboxNotFound, type ExecEvent } from "../../../sdk/src/index.js";
+import { FakeClock } from "../../../src/clock.js";
+import { loadConfig } from "../../../src/config.js";
+import { createApp } from "../../../src/http/app.js";
+import { CounterIdGenerator } from "../../../src/id.js";
+import { InMemorySandboxRepository } from "../../../src/repositories/sandboxRepository.js";
+import { InMemoryTemplateRepository } from "../../../src/repositories/templateRepository.js";
+import { FakeRuntime } from "../../../src/runtime/fakeRuntime.js";
+import { SandboxService } from "../../../src/services/sandboxService.js";
+import { WarmPools } from "../../../src/services/warmPool.js";
 
 // The real HTTP stack on a random port with the fake runtime, so the SDK is tested over real sockets without Docker.
 const runtime = new FakeRuntime();
