@@ -18,7 +18,7 @@ echo "deb [arch=amd64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] 
 sudo apt-get update && sudo apt-get install -y runsc
 sudo runsc install
 sudo systemctl restart docker
-docker run --rm --runtime=runsc alpine uname -a   # prints a 4.4.0 kernel line: that is gVisor
+docker run --rm --runtime=runsc alpine uname -a   # kernel line ends in -gvisor: that is gVisor
 ```
 
 ## Run

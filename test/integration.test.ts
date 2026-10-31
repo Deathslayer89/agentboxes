@@ -1,6 +1,7 @@
 // Runs against real Docker with gVisor registered. Not part of `npm test`.
 //   npm run test:integration
 import assert from "node:assert/strict";
+import os from "node:os";
 import test, { after, before } from "node:test";
 import Docker from "dockerode";
 import { SystemClock } from "../src/clock.js";
@@ -49,7 +50,8 @@ test("S3: the per-exec timeout kills the command and the sandbox survives", asyn
 
 test("S1: the kernel inside is gVisor's, not the host's", async () => {
   const r = await run(["uname", "-r"]);
-  assert.ok(r.stdout.startsWith("4.4.0"), `uname -r printed ${r.stdout}`);
+  assert.match(r.stdout, /gvisor/, `uname -r printed ${r.stdout}`);
+  assert.notEqual(r.stdout.trim(), os.release());
 });
 
 test("S2: no network", async () => {
