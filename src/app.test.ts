@@ -77,3 +77,43 @@ test("PUT and GET files carry raw bytes; a missing path is a 400", async () => {
   assert.equal((await app.request(`/sandboxes/${id}/files?path=../x`, { method: "PUT", body: "x" })).status, 400);
   assert.equal((await app.request(`/sandboxes/${id}/files?path=nope`)).status, 404);
 });
+
+// Minimal SSE parser for tests: returns [{event, data}] in order.
+function parseSse(text: string): Array<{ event: string; data: unknown }> {
+  return text
+    .split("\n\n")
+    .filter((block) => block.trim() !== "")
+    .map((block) => {
+      const event = /^event: (.*)$/m.exec(block)?.[1] ?? "message";
+      const data = /^data: (.*)$/m.exec(block)?.[1] ?? "";
+      return { event, data: JSON.parse(data) };
+    });
+}
+
+test("exec/stream sends output chunks as events, then an exit event", async () => {
+  const { app } = makeApp();
+  const { id } = (await (await app.request("/sandboxes", { method: "POST", body: "{}" })).json()) as { id: string };
+  const res = await app.request(`/sandboxes/${id}/exec/stream`, { method: "POST", body: JSON.stringify({ cmd: ["echo", "hi"] }) });
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type") ?? "", /text\/event-stream/);
+  const events = parseSse(await res.text());
+  assert.deepEqual(events, [
+    { event: "stdout", data: "ech" },
+    { event: "stdout", data: "o hi" },
+    { event: "stderr", data: "" },
+    { event: "exit", data: { exitCode: 0, durationMs: 1, timedOut: false, truncated: false } },
+  ]);
+  assert.equal((await app.request("/sandboxes/sbx_nope/exec/stream", { method: "POST", body: JSON.stringify({ cmd: ["true"] }) })).status, 404);
+  assert.equal((await app.request(`/sandboxes/${id}/exec/stream`, { method: "POST", body: "{}" })).status, 400);
+});
+
+test("exec/stream reports a failure after the stream began as an error event", async () => {
+  const { app, runtime } = makeApp();
+  const { id } = (await (await app.request("/sandboxes", { method: "POST", body: "{}" })).json()) as { id: string };
+  runtime.containers.clear(); // the container vanished under the server
+  const res = await app.request(`/sandboxes/${id}/exec/stream`, { method: "POST", body: JSON.stringify({ cmd: ["true"] }) });
+  assert.equal(res.status, 200);
+  const [only] = parseSse(await res.text());
+  assert.equal(only?.event, "error");
+  assert.equal((only?.data as { error: string }).error, "ConflictError");
+});

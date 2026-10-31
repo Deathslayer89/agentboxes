@@ -108,3 +108,16 @@ test("F7: a file bigger than MAX_FILE_BYTES is refused on read, and exec output 
   assert.equal(r.truncated, true);
   assert.equal(r.stdout.length, config.maxOutputBytes);
 });
+
+test("F6: output chunks arrive while the command is still running", async () => {
+  const arrivals: number[] = [];
+  const startedAt = Date.now();
+  const r = await service.exec(
+    id,
+    { cmd: ["python", "-c", "import time\nfor i in range(3):\n    print(i)\n    time.sleep(0.3)"] },
+    () => arrivals.push(Date.now() - startedAt),
+  );
+  assert.equal(r.stdout, "0\n1\n2\n");
+  assert.ok(arrivals.length >= 3, `got ${arrivals.length} chunks`);
+  assert.ok((arrivals[0] ?? Infinity) < r.durationMs / 2, `first chunk at ${arrivals[0]} ms, command took ${r.durationMs} ms`);
+});

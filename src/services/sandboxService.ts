@@ -4,7 +4,7 @@ import { ConflictError, LimitExceededError, NotFoundError, ValidationError } fro
 import type { IdGenerator } from "../id.js";
 import { isGone, type CreateSandboxRequest, type ExecRequest, type ExecResult, type Sandbox, type SandboxLimits } from "../models/sandbox.js";
 import type { SandboxRepository } from "../repositories/sandboxRepository.js";
-import type { SandboxRuntime } from "../runtime/sandboxRuntime.js";
+import type { OutputListener, SandboxRuntime } from "../runtime/sandboxRuntime.js";
 import { resolveWorkspacePath } from "./workspacePath.js";
 
 // How long a gone sandbox stays visible in GET /sandboxes/:id after its TTL, so a
@@ -65,12 +65,13 @@ export class SandboxService {
     return this.sandboxes.findAll();
   }
 
-  async exec(id: string, request: ExecRequest): Promise<ExecResult> {
+  // With onOutput, chunks are delivered as they arrive (F6); the result still holds everything.
+  async exec(id: string, request: ExecRequest, onOutput?: OutputListener): Promise<ExecResult> {
     const timeoutMs = request.timeoutMs ?? this.config.defaultExecTimeoutMs;
     if (timeoutMs > this.config.maxExecTimeoutMs) {
       throw new ValidationError(`timeoutMs ${timeoutMs} exceeds the server maximum of ${this.config.maxExecTimeoutMs}`);
     }
-    return this.occupy(id, (handle) => this.runtime.exec(handle, request.cmd, timeoutMs));
+    return this.occupy(id, (handle) => this.runtime.exec(handle, request.cmd, timeoutMs, onOutput));
   }
 
   // F7: files live under /workspace only. Returns the absolute path that was written.

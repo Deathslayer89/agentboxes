@@ -1,4 +1,6 @@
+import { StringDecoder } from "node:string_decoder";
 import { Hono, type Context } from "hono";
+import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ConflictError, DomainError, LimitExceededError, NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
 import type { Sandbox } from "../models/sandbox.js";
@@ -64,6 +66,32 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
   app.post("/sandboxes/:id/exec", async (c) => {
     const result = await service.exec(c.req.param("id"), parseExecRequest(await jsonBody(c)));
     return c.json(result);
+  });
+
+  // F6: same body as exec, but the response is a Server-Sent Events stream:
+  //   event: stdout | stderr   data: JSON string with the chunk
+  //   event: exit              data: { exitCode, durationMs, timedOut, truncated }
+  //   event: error             data: { error, message }   (only if exec fails after the stream began)
+  // A JSON string per chunk keeps embedded newlines intact across the SSE framing.
+  app.post("/sandboxes/:id/exec/stream", async (c) => {
+    const id = c.req.param("id");
+    const request = parseExecRequest(await jsonBody(c));
+    service.get(id); // unknown id is a plain 404 before any stream starts
+    return streamSSE(c, async (stream) => {
+      // One decoder per stream so a multibyte character split across chunks is not garbled.
+      const decoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
+      const send = (event: string, data: unknown) => stream.writeSSE({ event, data: JSON.stringify(data) }).catch(() => {});
+      try {
+        const { exitCode, durationMs, timedOut, truncated } = await service.exec(id, request, (name, chunk) => {
+          void send(name, decoders[name].write(chunk));
+        });
+        await send("exit", { exitCode, durationMs, timedOut, truncated });
+      } catch (err) {
+        const known = err instanceof DomainError;
+        if (!known) console.error(err);
+        await send("error", { error: known ? err.name : "InternalError", message: known ? err.message : "unexpected server error" });
+      }
+    });
   });
 
   app.delete("/sandboxes/:id", async (c) => c.json(view(await service.destroy(c.req.param("id")))));
