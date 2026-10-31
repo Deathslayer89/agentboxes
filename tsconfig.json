@@ -15,5 +15,5 @@
     "allowJs": true
   },
   "include": ["src", "test", "sdk/src", "examples", "proxy", "mcp", "bench"],
-  "exclude": ["examples/mastra", "node_modules"]
+  "exclude": ["examples/mastra", "examples/coding-agent", "node_modules"]
 }
