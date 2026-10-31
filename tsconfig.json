@@ -11,7 +11,8 @@
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force",
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "allowJs": true
   },
-  "include": ["src", "test", "sdk/src", "examples"]
+  "include": ["src", "test", "sdk/src", "examples", "proxy"]
 }
