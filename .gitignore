@@ -4,3 +4,4 @@ node_modules/
 dist/
 sdk/dist/
 LATER.md
+THREAT_MODEL.md

@@ -14,5 +14,6 @@
     "skipLibCheck": true,
     "allowJs": true
   },
-  "include": ["src", "test", "sdk/src", "examples", "proxy", "mcp", "bench"]
+  "include": ["src", "test", "sdk/src", "examples", "proxy", "mcp", "bench"],
+  "exclude": ["examples/mastra", "node_modules"]
 }

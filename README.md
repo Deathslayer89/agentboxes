@@ -2,7 +2,7 @@
 
 Self-hosted sandboxes for AI agents. Runs on any Linux box with Docker and gVisor; no KVM needed.
 
-Status: v0.1 in progress. Everything below works and has a test or a benchmark behind it. Still to come: a Mastra example and the threat model.
+Status: v0.1. Everything below works and has a test or a benchmark behind it.
 
 ## Requirements
 
@@ -142,6 +142,16 @@ Cursor (`.cursor/mcp.json`) or a project `.mcp.json` for Claude Code:
 
 Environment for the MCP server: `AGENTBOX_URL`, `AGENTBOX_API_KEY`, `AGENTBOX_TEMPLATE`, `AGENTBOX_ALLOW_HOSTS` (comma separated, for example `pypi.org,files.pythonhosted.org`) and `AGENTBOX_TTL_SECONDS`.
 
+## Mastra example
+
+`examples/mastra/agent.ts` is a Mastra agent with one tool, `run_python`, that writes the model's code into a sandbox and runs it. The sandbox is created on the first call and reused, so files persist between tool calls. It has its own `package.json` so Mastra does not land in the main install:
+
+```bash
+cd examples/mastra && npm install
+ANTHROPIC_API_KEY=... npm start "Compute the first ten prime numbers and print them."
+AGENTBOX_ALLOW_HOSTS=pypi.org,files.pythonhosted.org npm start "Use numpy to invert a 3x3 matrix"   # lets the agent pip install
+```
+
 ## Templates
 
 A template is a Docker image with packages already installed, so a sandbox starts with them and never downloads at run time. Write a Dockerfile that starts `FROM python:3.12-slim` (the base image), install as root, and build it:
@@ -197,7 +207,7 @@ An idle sandbox holds about 16 MB of host memory with gVisor's sentry included, 
 ## What this is not
 
 - Not multi-node: one server, one Docker host, state in memory. A restart forgets sandboxes and removes their containers.
-- Not KVM-level isolation: gVisor is a user-space kernel that handles most syscalls itself, but the host kernel still serves the ones it forwards, and the sentry runs as a host process. The threat model will spell out what an attacker inside a sandbox can still do.
+- Not KVM-level isolation: gVisor is a user-space kernel that handles most syscalls itself, but the host kernel still serves the ones it forwards, and the sentry runs as a host process.
 - Not multi-tenant: one API key for everyone who can reach the server. Per-key limits are planned for v0.2.
 - Not ready for big workspaces: `/workspace` is memory-backed, so a large `node_modules` or repository counts against the sandbox's memory limit.
 - Not a preview host: nothing inside a sandbox is reachable from outside, and nothing is persisted after the TTL.
@@ -223,5 +233,6 @@ src/cli.ts         `agentbox template build | list`
 proxy/             the egress proxy (plain Node, no dependencies) and its Dockerfile
 sdk/               the TypeScript client
 mcp/               the MCP server, built on the client
+examples/          the SDK walkthrough and the Mastra agent
 test/              unit tests by area, and integration tests against real gVisor
 ```
