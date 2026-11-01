@@ -14,11 +14,12 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+      # Trusted publishing: npm trusts this workflow through GitHub's OIDC token, so no npm token is stored anywhere.
+      # It needs npm 11.5 or newer, and the package's trusted publisher set on npmjs.com to this repository and file.
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: npm test
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
   pypi:
     runs-on: ubuntu-24.04
     permissions:
