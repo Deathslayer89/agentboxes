@@ -13,11 +13,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Deathslayer89/agentbox.git"
+    "url": "git+https://github.com/Deathslayer89/agentboxes.git"
   },
-  "homepage": "https://github.com/Deathslayer89/agentbox#readme",
+  "homepage": "https://github.com/Deathslayer89/agentboxes#readme",
   "bugs": {
-    "url": "https://github.com/Deathslayer89/agentbox/issues"
+    "url": "https://github.com/Deathslayer89/agentboxes/issues"
   },
   "type": "module",
   "engines": {
