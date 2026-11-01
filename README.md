@@ -28,13 +28,13 @@ npm install
 npm start          # listens on http://127.0.0.1:7788, pulls python:3.12-slim on first run; Ctrl+C stops it
 ```
 
-The server prints one line per request (method, path, status, time, and the key's name when auth is on), except health probes. The server listens on loopback and needs no auth until you say otherwise. To serve other machines, set a key and the interface; a non-loopback `HOST` without a key is refused at startup. With a key, every route except `/health` needs `Authorization: Bearer <key>`:
+The server listens on loopback and needs no auth until you say otherwise. To serve other machines, set a key and the interface; a non-loopback `HOST` without a key is refused at startup. With a key, every route except `/health` needs `Authorization: Bearer <key>`:
 
 ```bash
 AGENTBOX_API_KEY=$(openssl rand -hex 16) HOST=0.0.0.0 npm start
 ```
 
-If you run the server in the background, `npm stop` sends SIGTERM to the server process using the pid file it writes next to its database (`data/agentbox.pid`). Killing only the npm wrapper in front of it leaves the server running.
+`http://127.0.0.1:7788/` is a status page: live sandboxes against the limit, the warm pool, host load and memory, and every live sandbox with its age, time to expiry, CPU share and memory, refreshed every two seconds from `GET /usage`. With auth on, the page asks for the key once and keeps it in the browser. If you run the server in the background, `npm stop` sends SIGTERM to the server process using the pid file it writes next to its database (`data/agentbox.pid`). Killing only the npm wrapper in front of it leaves the server running.
 
 Or run the server as a container, with gVisor installed on the host as above:
 
@@ -86,6 +86,16 @@ curl -s -X DELETE localhost:7788/sandboxes/sbx_...
 ```
 
 Sandbox records live in a SQLite file (`AGENTBOX_DB`, default `data/agentbox.db`). Stopping the server leaves sandboxes running and removes the warm pool's containers; the next start adopts every sandbox whose container is still there, marks the others expired, removes anything left over (a pool container that was still starting shows up as "removed 1 orphaned container(s)"), and keeps using the egress proxy container from the previous run so allowlisted sandboxes keep their network. If Docker itself restarted, or the proxy's source changed since it was built, the proxy is started fresh and sandboxes that had a network are destroyed at startup, with a log line. While the server is down nothing enforces TTLs: sandboxes run until the next start reaps the expired ones. A command whose client disconnects, or whose streaming response is aborted, is killed inside the sandbox; the sandbox itself stays. Sandboxes expire after `ttlSeconds` (default 600, max 3600) unless extended. A reaper removes expired ones and any container labelled `agentbox=1` that the server does not know about.
+
+## Logs
+
+Logs are pretty single lines on a terminal and JSON lines everywhere else (Docker, pm2, a file); `LOG_FORMAT=json` or `pretty` overrides that. Every line names its component (`http`, `service`, `runtime`, `proxy`, `pool`, `server`), and every sandbox event carries the sandbox id: a create with its owner, source and limits, every command with its arguments, exit code and time, files and archives with their sizes, extends, expiries and destroys, orphans and dead pool containers, proxy starts, and one line per HTTP request with its status, time and the key's name. `LOG_LEVEL=debug` adds command starts, container ids and network attachments; `LOG_LEVEL=warn` keeps only problems. Command arguments are logged as given and environment values are not, so keep secrets out of arguments; that is what the proxy's secret injection is for.
+
+```
+14:02:11.318 INFO (service): sandbox created sandbox=sbx_9b7c32d3a19e owner=local template=default source=pool ms=0.4 ...
+14:02:11.402 INFO (service): exec done sandbox=sbx_9b7c32d3a19e cmd="python -c print(2+2)" cwd=/workspace exitCode=0 ms=81 ...
+14:02:11.403 INFO (http): request method=POST path=/sandboxes/sbx_9b7c32d3a19e/exec status=200 ms=83
+```
 
 ## Warm pool
 
@@ -326,7 +336,7 @@ src/models/        sandbox and template records, request/response types
 src/repositories/  where records live: sandboxes and settings in SQLite, templates as labelled Docker images
 src/runtime/       SandboxRuntime interface, the gVisor-on-Docker implementation and the Firecracker one
 src/services/      SandboxService (create, exec, files, destroy, reap) and the warm pools
-src/http/          routes, auth and request parsing
+src/http/          routes, auth, request parsing and the status page
 src/cli.ts         `agentbox template build | list`
 proxy/             the egress proxy (plain Node, no dependencies) and its Dockerfile
 firecracker/       setup script and the guest agent for the Firecracker runtime

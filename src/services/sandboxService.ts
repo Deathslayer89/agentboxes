@@ -1,13 +1,35 @@
+import os from "node:os";
 import type { Clock } from "../clock.js";
 import type { Config } from "../config.js";
 import { ConflictError, LimitExceededError, NotFoundError, ValidationError } from "../errors.js";
 import type { IdGenerator } from "../id.js";
+import { logFor, type Logger } from "../log.js";
 import { isGone, type CreateSandboxRequest, type ExecRequest, type ExecResult, type Sandbox, type SandboxLimits, type SandboxNetwork } from "../models/sandbox.js";
 import { LOCAL_OWNER } from "../models/apiKey.js";
 import { DEFAULT_TEMPLATE, type Template } from "../models/template.js";
 import type { SandboxRepository } from "../repositories/sandboxRepository.js";
 import type { TemplateRepository } from "../repositories/templateRepository.js";
 import type { DeniedRequest, EgressPolicy, OutputListener, SandboxRuntime, SecretHeader } from "../runtime/sandboxRuntime.js";
+
+const MB = 1024 * 1024;
+
+// What the status page shows: the host's load and memory, and every live sandbox with what it uses right now.
+export interface UsageReport {
+  host: { cpus: number; load1: number; memoryTotalMb: number; memoryUsedMb: number };
+  sandboxes: Array<{
+    id: string;
+    owner: string;
+    template: string;
+    status: string;
+    allowHosts: number;
+    ageSeconds: number;
+    expiresInSeconds: number;
+    limits: { memoryMb: number; diskMb: number; cpus: number };
+    // Null until the runtime has a sample, so the JSON shape is the same on every call.
+    cpuPercent: number | null;
+    memoryMb: number | null;
+  }>;
+}
 import { Metrics } from "./metrics.js";
 import type { PoolStats, WarmPools } from "./warmPool.js";
 import { resolveWorkspaceDir, resolveWorkspacePath } from "./workspacePath.js";
@@ -29,6 +51,7 @@ export class SandboxService {
     private readonly clock: Clock,
     private readonly ids: IdGenerator,
     private readonly pools: WarmPools,
+    private readonly log: Logger = logFor("service"),
   ) {}
 
   async create(request: CreateSandboxRequest = {}, owner = LOCAL_OWNER): Promise<Sandbox> {
@@ -67,6 +90,7 @@ export class SandboxService {
       }
     } catch (e) {
       this.sandboxes.delete(sandbox.id);
+      this.log.warn({ sandbox: sandbox.id, owner, template, err: e }, "sandbox start failed");
       throw e;
     }
     if (isGone(sandbox)) {
@@ -80,6 +104,10 @@ export class SandboxService {
     sandbox.status = "ready";
     this.sandboxes.save(sandbox);
     this.metrics.creates[sandbox.startup.source] += 1;
+    this.log.info(
+      { sandbox: sandbox.id, owner, template, source: sandbox.startup.source, ms: sandbox.startup.ms, limits, allowHosts: egress?.network.allowHosts, secretHosts: egress?.network.secretHosts },
+      "sandbox created",
+    );
     return sandbox;
   }
 
@@ -109,6 +137,37 @@ export class SandboxService {
     // A host with a secret is allowed on 80 and 443 without listing it twice.
     const allowHosts = [...new Set([...(request.allowHosts ?? []), ...Object.keys(secrets)])];
     return { policy: { allowHosts, secrets }, network: { allowHosts, secretHosts: Object.keys(secrets) } };
+  }
+
+  // Live sandboxes of one owner (or all) with their current CPU and memory, plus the host's own numbers.
+  async usage(owner?: string): Promise<UsageReport> {
+    const live = this.list(false, owner).filter((s) => s.handle !== undefined);
+    const byHandle = await this.runtime.usage(live.map((s) => s.handle as string));
+    const now = this.clock.now().getTime();
+    const tenth = (n: number | undefined) => (n === undefined ? null : Math.round(n * 10) / 10);
+    return {
+      host: {
+        cpus: os.cpus().length,
+        load1: tenth(os.loadavg()[0]) ?? 0,
+        memoryTotalMb: Math.round(os.totalmem() / MB),
+        memoryUsedMb: Math.round((os.totalmem() - os.freemem()) / MB),
+      },
+      sandboxes: live.map((s) => {
+        const use = byHandle[s.handle as string];
+        return {
+          id: s.id,
+          owner: s.owner,
+          template: s.template,
+          status: s.status,
+          allowHosts: s.network?.allowHosts.length ?? 0,
+          ageSeconds: Math.round((now - s.createdAt.getTime()) / 1000),
+          expiresInSeconds: Math.max(0, Math.round((s.expiresAt.getTime() - now) / 1000)),
+          limits: { memoryMb: s.limits.memoryMb, diskMb: s.limits.diskMb, cpus: s.limits.cpus },
+          cpuPercent: tenth(use?.cpuPercent),
+          memoryMb: tenth(use?.memoryMb),
+        };
+      }),
+    };
   }
 
   stats(): { sandboxes: { live: number; max: number }; pools: Record<string, PoolStats> } {
@@ -149,9 +208,16 @@ export class SandboxService {
       throw new ValidationError(`timeoutMs ${timeoutMs} exceeds the server maximum of ${this.config.maxExecTimeoutMs}`);
     }
     const options = { timeoutMs, cwd: resolveWorkspaceDir(request.cwd ?? "/workspace"), env: request.env ?? {}, ...(signal === undefined ? {} : { signal }) };
+    const cmd = request.cmd.join(" ").slice(0, 300);
+    this.log.debug({ sandbox: id, cmd, cwd: options.cwd, timeoutMs, env: Object.keys(options.env) }, "exec start");
     const startedAt = performance.now();
     try {
-      return await this.occupy(id, (handle) => this.runtime.exec(handle, request.cmd, options, onOutput));
+      const result = await this.occupy(id, (handle) => this.runtime.exec(handle, request.cmd, options, onOutput));
+      this.log.info(
+        { sandbox: id, cmd, cwd: options.cwd, exitCode: result.exitCode, ms: result.durationMs, timedOut: result.timedOut, truncated: result.truncated, stdoutBytes: Buffer.byteLength(result.stdout), stderrBytes: Buffer.byteLength(result.stderr) },
+        "exec done",
+      );
+      return result;
     } finally {
       this.metrics.observeExec((performance.now() - startedAt) / 1000);
     }
@@ -164,12 +230,15 @@ export class SandboxService {
       throw new ValidationError(`file is ${data.length} bytes; the limit is ${this.config.maxFileBytes}`);
     }
     await this.occupy(id, (handle) => this.runtime.writeFile(handle, absolute, data));
+    this.log.info({ sandbox: id, path: absolute, bytes: data.length }, "file written");
     return absolute;
   }
 
   async readFile(id: string, path: unknown): Promise<Buffer> {
     const absolute = resolveWorkspacePath(path);
-    return this.occupy(id, (handle) => this.runtime.readFile(handle, absolute));
+    const data = await this.occupy(id, (handle) => this.runtime.readFile(handle, absolute));
+    this.log.info({ sandbox: id, path: absolute, bytes: data.length }, "file read");
+    return data;
   }
 
   // Unpacks a tar archive into a directory under /workspace. Returns the absolute directory.
@@ -179,12 +248,15 @@ export class SandboxService {
       throw new ValidationError(`archive is ${tar.length} bytes; the limit is ${this.config.maxArchiveBytes}`);
     }
     await this.occupy(id, (handle) => this.runtime.putArchive(handle, absolute, tar));
+    this.log.info({ sandbox: id, path: absolute, bytes: tar.length }, "archive unpacked");
     return absolute;
   }
 
   async getArchive(id: string, dir: unknown): Promise<Buffer> {
     const absolute = resolveWorkspaceDir(dir);
-    return this.occupy(id, (handle) => this.runtime.getArchive(handle, absolute));
+    const tar = await this.occupy(id, (handle) => this.runtime.getArchive(handle, absolute));
+    this.log.info({ sandbox: id, path: absolute, bytes: tar.length }, "archive packed");
+    return tar;
   }
 
   // Runs `work` against a live sandbox, marking it busy for the duration.
@@ -216,6 +288,7 @@ export class SandboxService {
     }
     sandbox.expiresAt = new Date(this.clock.now().getTime() + ttl * 1000);
     this.sandboxes.save(sandbox);
+    this.log.info({ sandbox: id, ttlSeconds: ttl, expiresAt: sandbox.expiresAt }, "sandbox extended");
     return sandbox;
   }
 
@@ -242,6 +315,7 @@ export class SandboxService {
         sandbox.activeExecs = 0;
         this.sandboxes.save(sandbox);
         adopted.push(sandbox.id);
+        this.log.info({ sandbox: sandbox.id, owner: sandbox.owner, expiresAt: sandbox.expiresAt }, "sandbox adopted from the previous run");
         continue;
       }
       if (alive) await this.remove(sandbox, "destroyed");
@@ -249,6 +323,7 @@ export class SandboxService {
         sandbox.status = "expired";
         sandbox.handle = undefined;
         this.sandboxes.save(sandbox);
+        this.log.info({ sandbox: sandbox.id, owner: sandbox.owner }, "sandbox from the previous run is gone");
       }
       lost.push(sandbox.id);
     }
@@ -278,6 +353,7 @@ export class SandboxService {
     const managed = await this.runtime.listManaged();
     // A dead pool container loses its slot first, so the orphan pass below removes it.
     const dead = this.pools.prune(new Set(managed.filter((c) => c.running).map((c) => c.handle)));
+    for (const slot of dead) this.log.warn({ slot }, "pool container died while waiting; dropped");
     const liveHandles = new Set(this.sandboxes.findAll().filter((s) => !isGone(s)).map((s) => s.handle));
     for (const { sandboxId, handle } of managed) {
       const known = this.sandboxes.findById(sandboxId);
@@ -286,6 +362,7 @@ export class SandboxService {
       if (this.pools.holds(sandboxId)) continue; // waiting in a pool, or starting for one
       await this.runtime.destroy(handle);
       orphans.push(sandboxId || handle);
+      this.log.info({ sandbox: sandboxId || undefined, container: handle.slice(0, 12) }, "orphaned container removed");
     }
     await this.pools.fill();
     return { expired, orphans, dead };
@@ -308,6 +385,8 @@ export class SandboxService {
       sandbox.handle = undefined;
       this.sandboxes.save(sandbox);
     }
+    const lifetimeSeconds = Math.round((this.clock.now().getTime() - sandbox.createdAt.getTime()) / 1000);
+    this.log.info({ sandbox: sandbox.id, owner: sandbox.owner, lifetimeSeconds }, `sandbox ${finalStatus}`);
   }
 
   // Fill in server defaults and refuse anything above the server maximums. Only limit fields are taken from the request.

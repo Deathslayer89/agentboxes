@@ -23,6 +23,12 @@ export interface DeniedRequest {
   reason: string;
 }
 
+// What one sandbox uses right now. CPU percent needs two samples, so the first report after a sandbox appears has none.
+export interface SandboxUsage {
+  cpuPercent: number | undefined;
+  memoryMb: number;
+}
+
 // Per-command settings the service has already validated.
 export interface ExecOptions {
   timeoutMs: number;
@@ -83,6 +89,9 @@ export interface SandboxRuntime {
    * the pool can drop containers that died while waiting.
    */
   listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean }>>;
+
+  // Current CPU and memory of the given containers; one that is gone is left out.
+  usage(handles: string[]): Promise<Record<string, SandboxUsage>>;
 
   // True when sandboxes with a network from before a server restart still have their proxy policies.
   egressKept(): boolean;

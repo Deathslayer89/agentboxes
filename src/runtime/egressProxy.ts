@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type Docker from "dockerode";
+import { logFor, type Logger } from "../log.js";
 import type { SettingsRepository } from "../repositories/sqliteStore.js";
 import type { DeniedRequest, EgressPolicy } from "./sandboxRuntime.js";
 
@@ -48,6 +49,7 @@ export class EgressProxyManager {
   constructor(
     private readonly docker: Docker,
     private readonly settings: SettingsRepository,
+    private readonly log: Logger = logFor("proxy"),
   ) {}
 
   get available(): boolean {
@@ -67,13 +69,18 @@ export class EgressProxyManager {
     }
     try {
       const source = await this.buildImage();
-      if (await this.reuseRunning(source)) return;
+      if (await this.reuseRunning(source)) {
+        this.log.info({ container: this.containerId?.slice(0, 12) }, "egress proxy from the previous run reused");
+        return;
+      }
       await this.removeLeftovers();
       this.adminToken = randomBytes(24).toString("hex");
       this.settings.set(ADMIN_TOKEN_SETTING, this.adminToken);
       await this.startContainer();
+      this.log.info({ container: this.containerId?.slice(0, 12), control: this.controlUrl }, "egress proxy started");
     } catch (e) {
       this.unavailableReason = `the egress proxy could not start: ${e instanceof Error ? e.message : String(e)}`;
+      this.log.warn({ err: e }, "egress proxy could not start");
     }
   }
 
@@ -123,6 +130,7 @@ export class EgressProxyManager {
       const proxyUrl = `http://${sandboxId}:${token}@${proxyIp}:${PROXY_PORT}`;
       const env = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"].map((key) => `${key}=${proxyUrl}`);
       const hasSecrets = Object.keys(policy.secrets).length > 0;
+      this.log.debug({ sandbox: sandboxId, network: name, subnet, allowHosts: policy.allowHosts, secretHosts: Object.keys(policy.secrets) }, "sandbox network attached");
       if (hasSecrets) {
         const bundle = `${CA_DIR}/bundle.pem`;
         env.push(`SSL_CERT_FILE=${bundle}`, `REQUESTS_CA_BUNDLE=${bundle}`, `CURL_CA_BUNDLE=${bundle}`, `GIT_SSL_CAINFO=${bundle}`, `PIP_CERT=${bundle}`, `NODE_EXTRA_CA_CERTS=${CA_DIR}/ca.pem`);
@@ -168,7 +176,7 @@ export class EgressProxyManager {
     } catch (e) {
       if (!isNotFound(e)) throw e;
     }
-    console.log("agentbox: building the egress proxy image");
+    this.log.info({ image: IMAGE }, "building the egress proxy image");
     const stream = await this.docker.buildImage({ context: SOURCE_DIR, src: SOURCE_FILES }, { t: IMAGE, labels: { [LABEL_SOURCE]: source } });
     await new Promise<void>((resolve, reject) => {
       this.docker.modem.followProgress(

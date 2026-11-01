@@ -7,6 +7,7 @@ import { loadConfig } from "./config.js";
 import { RuntimeUnavailableError } from "./errors.js";
 import { createApp } from "./http/app.js";
 import { RandomIdGenerator } from "./id.js";
+import { logFor } from "./log.js";
 import { DEFAULT_TEMPLATE } from "./models/template.js";
 import { SqliteStore } from "./repositories/sqliteStore.js";
 import { EgressProxyManager } from "./runtime/egressProxy.js";
@@ -16,6 +17,7 @@ import { GvisorDockerRuntime } from "./runtime/gvisorDockerRuntime.js";
 import { SandboxService } from "./services/sandboxService.js";
 import { WarmPool, WarmPools } from "./services/warmPool.js";
 
+const log = logFor("server");
 const config = loadConfig();
 const docker = new Docker();
 const store = new SqliteStore(config.dbPath);
@@ -30,7 +32,7 @@ try {
   await runtime.init();
 } catch (e) {
   if (e instanceof RuntimeUnavailableError) {
-    console.error(`agentbox: ${e.message}`);
+    log.fatal(e.message);
     process.exit(1);
   }
   throw e;
@@ -43,7 +45,7 @@ known.set(DEFAULT_TEMPLATE, config.image);
 for (const [template, size] of Object.entries(config.poolSizes)) {
   const image = known.get(template);
   if (image === undefined) {
-    console.error(`agentbox: POOL_SIZES names template "${template}" but no such image exists; build it with: npm run agentbox -- template build ${template} ./Dockerfile`);
+    log.fatal({ template }, `POOL_SIZES names template "${template}" but no such image exists; build it with: npm run agentbox -- template build ${template} ./Dockerfile`);
     process.exit(1);
   }
   pools.add(template, new WarmPool(runtime, config.defaults, size, image, template));
@@ -61,41 +63,30 @@ const service = new SandboxService(
 
 // Take back the sandboxes of the previous run, drop what did not survive, then fill the pool, before taking requests.
 const { adopted, lost } = await service.adopt();
-if (adopted.length > 0) console.log(`agentbox: adopted ${adopted.length} running sandbox(es) from the previous run`);
-if (lost.length > 0) console.log(`agentbox: ${lost.length} sandbox(es) from the previous run did not survive: ${lost.join(", ")}`);
-const leftovers = await service.reap();
-if (leftovers.orphans.length > 0) console.log(`agentbox: removed ${leftovers.orphans.length} orphaned container(s)`);
-if (leftovers.dead.length > 0) console.log(`agentbox: dropped ${leftovers.dead.length} dead pool container(s)`);
-for (const [template, s] of Object.entries(pools.stats())) console.log(`agentbox: warm pool ${template}: ${s.ready} of ${s.size} ready`);
+if (adopted.length > 0 || lost.length > 0) log.info({ adopted: adopted.length, lost: lost.length }, "sandboxes from the previous run checked");
+await service.reap();
+for (const [template, s] of Object.entries(pools.stats())) log.info({ template, ready: s.ready, size: s.size }, "warm pool filled");
 
+// The service logs each expiry, orphan and dead pool container itself.
 const reaper = setInterval(() => {
-  service
-    .reap()
-    .then(({ expired, orphans, dead }) => {
-      if (expired.length > 0) console.log(`reaper: expired ${expired.join(", ")}`);
-      if (orphans.length > 0) console.log(`reaper: removed orphans ${orphans.join(", ")}`);
-      if (dead.length > 0) console.log(`reaper: dropped dead pool containers ${dead.join(", ")}`);
-    })
-    .catch((err) => console.error("reaper:", err));
+  service.reap().catch((err: unknown) => log.error({ err }, "reaper pass failed"));
 }, config.reaperIntervalMs);
 
 if (config.apiKeys.length === 0) {
-  console.log("agentbox: no API key is set, so auth is off; set AGENTBOX_API_KEY and HOST=0.0.0.0 to serve other machines");
-} else {
-  console.log(`agentbox: ${config.apiKeys.length} API key(s): ${config.apiKeys.map((k) => k.name).join(", ")}`);
+  log.warn("no API key is set, so auth is off; set AGENTBOX_API_KEY and HOST=0.0.0.0 to serve other machines");
 }
 // The pid next to the database, so `npm stop` can find the server behind the npm wrapper.
 const pidFile = join(dirname(config.dbPath), "agentbox.pid");
 mkdirSync(dirname(pidFile), { recursive: true });
 writeFileSync(pidFile, `${process.pid}\n`);
 
-const server = serve({ fetch: createApp(service, { apiKeys: config.apiKeys, log: console.log }).fetch, hostname: config.host, port: config.port }, (info) => {
-  console.log(`agentbox listening on http://${info.address}:${info.port} (image ${config.image}, runtime ${runtime.runtimeName})`);
+const server = serve({ fetch: createApp(service, { apiKeys: config.apiKeys, logger: logFor("http") }).fetch, hostname: config.host, port: config.port }, (info) => {
+  log.info({ url: `http://${info.address}:${info.port}`, image: config.image, runtime: runtime.runtimeName, keys: config.apiKeys.map((k) => k.name), db: config.dbPath }, "agentbox listening");
 });
 
 // Sandboxes keep running: their records are on disk and the next start adopts them. Only the pool is drained.
 async function shutdown(signal: string): Promise<void> {
-  console.log(`agentbox: ${signal} received, leaving ${service.list().filter((s) => s.status !== "expired" && s.status !== "destroyed").length} sandbox(es) running`);
+  log.info({ signal, running: service.list().length }, "shutting down; sandboxes keep running for the next start");
   clearInterval(reaper);
   server.close();
   await pools.drain();

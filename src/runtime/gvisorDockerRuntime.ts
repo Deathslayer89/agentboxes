@@ -2,9 +2,10 @@ import { randomBytes } from "node:crypto";
 import Docker from "dockerode";
 import { Writable } from "node:stream";
 import { ConflictError, NotFoundError, RuntimeUnavailableError, ValidationError } from "../errors.js";
+import { logFor, type Logger } from "../log.js";
 import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
 import { CA_DIR, type EgressAttachment, type EgressProxyManager } from "./egressProxy.js";
-import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime } from "./sandboxRuntime.js";
+import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime, SandboxUsage } from "./sandboxRuntime.js";
 
 const WORKSPACE = "/workspace";
 // uid:gid of "nobody" in Debian based images. The sandbox never runs as root (S5).
@@ -64,6 +65,7 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     private readonly maxFileBytes: number,
     private readonly maxArchiveBytes: number,
     private readonly egress: EgressProxyManager,
+    private readonly log: Logger = logFor("runtime"),
   ) {
     this.runtimeName = requestedRuntime;
   }
@@ -84,7 +86,7 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     }
     await this.ensureImage();
     await this.egress.init();
-    if (!this.egress.available) console.log(`agentbox: network allowlist is off: ${this.egress.unavailableReason}`);
+    if (!this.egress.available) this.log.warn({ reason: this.egress.unavailableReason }, "network allowlist is off");
   }
 
   private async ensureImage(): Promise<void> {
@@ -94,7 +96,7 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     } catch (e) {
       if (!isNotFound(e)) throw e;
     }
-    console.log(`agentbox: pulling ${this.image} (first run only)`);
+    this.log.info({ image: this.image }, "pulling the base image (first run only)");
     const stream = await this.docker.pull(this.image);
     await new Promise<void>((resolve, reject) => {
       this.docker.modem.followProgress(stream, (err) => (err ? reject(err) : resolve()));
@@ -152,6 +154,7 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     });
     try {
       await container.start();
+      this.log.debug({ sandbox: sandboxId, container: container.id.slice(0, 12), image, network: attachment?.network ?? "none" }, "container started");
       if (attachment?.caPem !== undefined) await this.installCa(container.id, attachment.caPem);
     } catch (e) {
       await container.remove({ force: true }).catch(() => {});
@@ -237,6 +240,40 @@ export class GvisorDockerRuntime implements SandboxRuntime {
       return;
     }
     if (labels[LABEL_NETWORKED] === "1") await this.egress.detach(labels[LABEL_ID] ?? "");
+  }
+
+  // The last CPU counters per container, so the next usage() call can turn the difference into a percentage.
+  private readonly cpuSamples = new Map<string, { total: number; system: number }>();
+
+  /**
+   * One Docker stats sample per container, taken without waiting for a second one. Memory is the
+   * cgroup's usage minus inactive file cache, as `docker stats` shows it; under gVisor that includes
+   * the sentry. CPU percent is the container's share of the host's CPU time since the previous call.
+   */
+  async usage(handles: string[]): Promise<Record<string, SandboxUsage>> {
+    const wanted = new Set(handles);
+    for (const handle of this.cpuSamples.keys()) if (!wanted.has(handle)) this.cpuSamples.delete(handle);
+    const entries = await Promise.all(
+      handles.map(async (handle): Promise<[string, SandboxUsage] | undefined> => {
+        let stats: Docker.ContainerStats;
+        try {
+          stats = await this.docker.getContainer(handle).stats({ stream: false, "one-shot": true });
+        } catch {
+          return undefined;
+        }
+        const memoryStats = (stats.memory_stats?.stats ?? {}) as Record<string, number | undefined>;
+        const memory = Math.max(0, (stats.memory_stats?.usage ?? 0) - (memoryStats.inactive_file ?? memoryStats.total_inactive_file ?? 0));
+        const sample = { total: stats.cpu_stats?.cpu_usage?.total_usage ?? 0, system: stats.cpu_stats?.system_cpu_usage ?? 0 };
+        const previous = this.cpuSamples.get(handle);
+        this.cpuSamples.set(handle, sample);
+        const cpuPercent =
+          previous !== undefined && sample.system > previous.system
+            ? ((sample.total - previous.total) / (sample.system - previous.system)) * (stats.cpu_stats?.online_cpus || 1) * 100
+            : undefined;
+        return [handle, { cpuPercent, memoryMb: memory / MB }];
+      }),
+    );
+    return Object.fromEntries(entries.filter((entry): entry is [string, SandboxUsage] => entry !== undefined));
   }
 
   async listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean }>> {

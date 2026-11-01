@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
 import { ConflictError, NotFoundError, RuntimeUnavailableError, ValidationError } from "../errors.js";
 import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
-import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime } from "./sandboxRuntime.js";
+import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime, SandboxUsage } from "./sandboxRuntime.js";
 
 const MB = 1024 * 1024;
 // How long to wait for a VM to boot to READY, or for a restored one to answer the seed.
@@ -141,6 +141,37 @@ export class FirecrackerRuntime implements SandboxRuntime {
   // Only VMs started by this process can be driven; a previous run's VMs were killed at init.
   async listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean }>> {
     return [...this.vms.keys()].map((id) => ({ sandboxId: id, handle: id, running: true }));
+  }
+
+  // The last CPU tick count per VM process, so the next usage() call can turn the difference into a percentage.
+  private readonly cpuSamples = new Map<string, { ticks: number; at: number }>();
+
+  // Resident memory and CPU time of each Firecracker process, read from /proc; Linux counts CPU time in 1/100 s ticks.
+  async usage(handles: string[]): Promise<Record<string, SandboxUsage>> {
+    const result: Record<string, SandboxUsage> = {};
+    for (const handle of handles) {
+      const pid = this.vms.get(handle)?.process.pid;
+      if (pid === undefined) continue;
+      let status: string;
+      let stat: string;
+      try {
+        status = readFileSync(`/proc/${pid}/status`, "utf8");
+        stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      } catch {
+        continue;
+      }
+      const rssKb = Number(/VmRSS:\s+(\d+)/.exec(status)?.[1] ?? 0);
+      // After the command name in parentheses, utime and stime are the 12th and 13th fields.
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      const ticks = Number(fields[11]) + Number(fields[12]);
+      const at = performance.now();
+      const previous = this.cpuSamples.get(handle);
+      this.cpuSamples.set(handle, { ticks, at });
+      const cpuPercent = previous === undefined ? undefined : ((ticks - previous.ticks) / 100 / ((at - previous.at) / 1000)) * 100;
+      result[handle] = { cpuPercent, memoryMb: rssKb / 1024 };
+    }
+    for (const handle of this.cpuSamples.keys()) if (!handles.includes(handle)) this.cpuSamples.delete(handle);
+    return result;
   }
 
   async egressLog(): Promise<DeniedRequest[]> {

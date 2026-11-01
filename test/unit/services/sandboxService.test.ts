@@ -9,6 +9,7 @@ import { InMemoryTemplateRepository } from "../../../src/repositories/templateRe
 import { FakeRuntime } from "../../../src/runtime/fakeRuntime.js";
 import { SandboxService } from "../../../src/services/sandboxService.js";
 import { WarmPool, WarmPools } from "../../../src/services/warmPool.js";
+import { captureLog } from "../../support/captureLog.js";
 
 // Fresh service per test so tests never depend on each other. Pools are off unless a test sets POOL_SIZES.
 function makeService(env: NodeJS.ProcessEnv = {}) {
@@ -137,6 +138,33 @@ test("the reaper leaves pool containers and claimed pool containers alone", asyn
   assert.equal(service.get(claimed.id).status, "ready");
   assert.equal(pools.stats().default?.ready, 1);
   assert.equal(runtime.containers.size, 2);
+});
+
+test("the service logs every sandbox event with the sandbox id", async () => {
+  const { log, entries } = captureLog();
+  const config = loadConfig({ POOL_SIZES: "default:0" });
+  const runtime = new FakeRuntime();
+  const service = new SandboxService(new InMemorySandboxRepository(), new InMemoryTemplateRepository(), runtime, config, new FakeClock(new Date("2026-01-01T00:00:00Z")), new CounterIdGenerator("sbx_"), new WarmPools(), log);
+  const box = await service.create({}, "team");
+  await service.exec(box.id, { cmd: ["python", "-c", "print(1)"], cwd: "app", env: { TOKEN: "hidden" } });
+  await service.writeFile(box.id, "a.txt", Buffer.from("hi"));
+  await service.destroy(box.id);
+  const events = entries.map((e) => [e.msg, e.sandbox]);
+  assert.deepEqual(events, [
+    ["sandbox created", "sbx_1"],
+    ["exec start", "sbx_1"],
+    ["exec done", "sbx_1"],
+    ["file written", "sbx_1"],
+    ["sandbox destroyed", "sbx_1"],
+  ]);
+  const done = entries.find((e) => e.msg === "exec done");
+  assert.equal(done?.cmd, "python -c print(1)");
+  assert.equal(done?.cwd, "/workspace/app");
+  assert.equal(done?.exitCode, 0);
+  const start = entries.find((e) => e.msg === "exec start");
+  assert.deepEqual(start?.env, ["TOKEN"], "environment variable names are logged, values are not");
+  assert.equal(JSON.stringify(entries).includes("hidden"), false);
+  assert.equal(entries.find((e) => e.msg === "sandbox created")?.owner, "team");
 });
 
 test("the reaper removes a pool container that died while waiting and refills the pool", async () => {

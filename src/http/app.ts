@@ -1,13 +1,19 @@
+import { readFileSync } from "node:fs";
 import { StringDecoder } from "node:string_decoder";
+import { fileURLToPath } from "node:url";
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ConflictError, DomainError, LimitExceededError, NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
+import type { Logger } from "../log.js";
 import { LOCAL_OWNER, type ApiKey } from "../models/apiKey.js";
 import type { Sandbox } from "../models/sandbox.js";
 import type { SandboxService } from "../services/sandboxService.js";
 import { bearerAuth } from "./auth.js";
 import { parseCreateRequest, parseExecRequest, parseExtendRequest } from "./validation.js";
+
+// The status page, read once; it polls /stats and /usage.
+const STATUS_PAGE = readFileSync(fileURLToPath(new URL("./status.html", import.meta.url)), "utf8");
 
 // The public shape of a sandbox: everything except runtime bookkeeping.
 function view(sandbox: Sandbox) {
@@ -39,8 +45,8 @@ async function jsonBody(c: Context): Promise<unknown> {
 export interface AppOptions {
   // When non-empty, every route except /health needs `Authorization: Bearer <key>` for one of these.
   apiKeys?: ApiKey[];
-  // Receives one line per request, except /health. Unset means no request log.
-  log?: (line: string) => void;
+  // Gets one line per request (except /health) and every unexpected error. Unset means no request log.
+  logger?: Logger;
 }
 
 export function createApp(service: SandboxService, options: AppOptions = {}): Hono<{ Variables: { owner: string } }> {
@@ -51,20 +57,22 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
   // The sandbox id from the path, after checking it belongs to the caller.
   const own = (c: Context<{ Variables: { owner: string } }>) => service.get(c.req.param("id") ?? "", ownerOf(c)).id;
 
+  const log = options.logger;
+  const unexpected = (err: unknown) => (log === undefined ? console.error(err) : log.error({ err }, "unexpected server error"));
+
   app.onError((err, c) => {
     if (err instanceof DomainError) return c.json({ error: err.name, message: err.message }, statusFor(err));
-    console.error(err);
+    unexpected(err);
     return c.json({ error: "InternalError", message: "unexpected server error" }, 500);
   });
 
   // Method, path, status, time to the response (for a stream, to its first byte), and the caller when auth is on.
-  const log = options.log;
   if (log !== undefined) {
     app.use(async (c, next) => {
       if (c.req.path === "/health") return next();
       const startedAt = performance.now();
       await next();
-      log(`${c.req.method} ${c.req.path} ${c.res.status} ${Math.round(performance.now() - startedAt)} ms${keys.length > 0 ? ` ${c.get("owner") ?? "-"}` : ""}`);
+      log.info({ method: c.req.method, path: c.req.path, status: c.res.status, ms: Math.round(performance.now() - startedAt), ...(keys.length > 0 ? { owner: c.get("owner") ?? null } : {}) }, "request");
     });
   }
 
@@ -75,11 +83,17 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
     const auth = bearerAuth(keys);
     app.use("/sandboxes/*", auth);
     app.use("/stats", auth);
+    app.use("/usage", auth);
     app.use("/metrics", auth);
     app.use("/templates", auth);
   }
 
+  // The page itself is open; the numbers it asks for are behind the key.
+  app.get("/", (c) => c.html(STATUS_PAGE));
+
   app.get("/stats", (c) => c.json(service.stats()));
+
+  app.get("/usage", async (c) => c.json(await service.usage(ownerOf(c))));
 
   app.get("/metrics", (c) => c.text(service.metricsText(), 200, { "content-type": "text/plain; version=0.0.4" }));
 
@@ -126,7 +140,7 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
         await send("exit", { exitCode, durationMs, timedOut, truncated });
       } catch (err) {
         const known = err instanceof DomainError;
-        if (!known) console.error(err);
+        if (!known) unexpected(err);
         await send("error", { error: known ? err.name : "InternalError", message: known ? err.message : "unexpected server error" });
       }
     });

@@ -1,3 +1,4 @@
+import { logFor, type Logger } from "../log.js";
 import type { SandboxLimits } from "../models/sandbox.js";
 import type { SandboxRuntime } from "../runtime/sandboxRuntime.js";
 
@@ -30,6 +31,7 @@ export class WarmPool {
     readonly size: number,
     private readonly image: string,
     private readonly template: string,
+    private readonly log: Logger = logFor("pool"),
   ) {}
 
   holds(slotId: string): boolean {
@@ -75,7 +77,7 @@ export class WarmPool {
       handle = await this.runtime.start(slotId, this.limits, this.image);
     } catch (e) {
       this.slots.delete(slotId);
-      console.error(`warm pool ${this.template}: could not start a container: ${e instanceof Error ? e.message : String(e)}`);
+      this.log.warn({ template: this.template, slot: slotId, err: e }, "warm pool container failed to start");
       return false;
     }
     if (this.closed) {
@@ -84,6 +86,7 @@ export class WarmPool {
       return false;
     }
     this.ready.push({ slotId, handle });
+    this.log.debug({ template: this.template, slot: slotId, container: handle.slice(0, 12), ready: this.ready.length }, "warm pool container ready");
     return true;
   }
 

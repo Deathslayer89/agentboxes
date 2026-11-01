@@ -7,8 +7,9 @@ import { CounterIdGenerator } from "../../../src/id.js";
 import { InMemorySandboxRepository } from "../../../src/repositories/sandboxRepository.js";
 import { InMemoryTemplateRepository } from "../../../src/repositories/templateRepository.js";
 import { FakeRuntime } from "../../../src/runtime/fakeRuntime.js";
-import { SandboxService } from "../../../src/services/sandboxService.js";
+import { SandboxService, type UsageReport } from "../../../src/services/sandboxService.js";
 import { WarmPools } from "../../../src/services/warmPool.js";
+import { captureLog } from "../../support/captureLog.js";
 
 // HTTP layer against the fake runtime: routes, status codes and auth, no Docker.
 function makeApp(options: AppOptions = {}, env: NodeJS.ProcessEnv = {}) {
@@ -156,13 +157,35 @@ test("PUT and GET archive carry tar bytes; the path defaults to /workspace", asy
   assert.equal((await app.request(`/sandboxes/${id}/archive?path=../`, { method: "PUT", body: "x" })).status, 400);
 });
 
+test("GET / is the status page; GET /usage reports the host and the caller's own sandboxes", async () => {
+  const { app } = makeApp({ apiKeys: [{ name: "a", key: "ka" }, { name: "b", key: "kb" }] });
+  const page = await app.request("/");
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("content-type") ?? "", /text\/html/);
+  assert.match(await page.text(), /<title>agentbox<\/title>/);
+  await app.request("/sandboxes", { method: "POST", headers: { authorization: "Bearer ka" }, body: "{}" });
+  await app.request("/sandboxes", { method: "POST", headers: { authorization: "Bearer kb" }, body: "{}" });
+  assert.equal((await app.request("/usage")).status, 401);
+  const usage = (await (await app.request("/usage", { headers: { authorization: "Bearer ka" } })).json()) as UsageReport;
+  assert.ok(usage.host.cpus > 0 && usage.host.memoryTotalMb > usage.host.memoryUsedMb);
+  assert.deepEqual(
+    usage.sandboxes.map((s) => [s.id, s.owner, s.status, s.ageSeconds, s.expiresInSeconds, s.cpuPercent, s.memoryMb, s.allowHosts]),
+    [["sbx_1", "a", "ready", 0, 600, 12.5, 64, 0]],
+  );
+});
+
 test("the request log gets one line per request, except health probes", async () => {
-  const lines: string[] = [];
-  const { app } = makeApp({ apiKeys: [{ name: "team", key: "k1" }], log: (line) => lines.push(line) });
+  const { log, entries } = captureLog();
+  const { app } = makeApp({ apiKeys: [{ name: "team", key: "k1" }], logger: log });
   await app.request("/health");
   await app.request("/sandboxes", { method: "POST", headers: { authorization: "Bearer k1" }, body: "{}" });
   await app.request("/sandboxes", { headers: { authorization: "Bearer wrong" } });
-  assert.deepEqual(lines.map((line) => line.replace(/\d+ ms/, "N ms")), ["POST /sandboxes 201 N ms team", "GET /sandboxes 401 N ms -"]);
+  const requests = entries.filter((e) => e.msg === "request").map(({ method, path, status, owner }) => ({ method, path, status, owner }));
+  assert.deepEqual(requests, [
+    { method: "POST", path: "/sandboxes", status: 201, owner: "team" },
+    { method: "GET", path: "/sandboxes", status: 401, owner: null },
+  ]);
+  assert.ok(entries.every((e) => typeof e.ms === "number"));
 });
 
 test("POST /sandboxes/:id/extend returns the record with a later expiry", async () => {

@@ -2,8 +2,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { rootLogger } from "../src/log.js";
 import { Agentbox, AgentboxError, ExecTimeout, type CreateOptions, type ExecResult, type Sandbox } from "../sdk/src/index.js";
 
+// stdout carries the protocol, so the log goes to stderr, which the MCP client keeps for its own log.
+const log = rootLogger(2).child({ component: "mcp" });
 const env = process.env;
 const client = new Agentbox({
   baseUrl: env.AGENTBOX_URL ?? "http://127.0.0.1:7788",
@@ -34,7 +37,7 @@ async function sandbox(): Promise<Sandbox> {
     }
   }
   current = await client.create(createOptions);
-  console.error(`agentbox mcp: using sandbox ${current.id} (${current.info.startup.source})`);
+  log.info({ sandbox: current.id, source: current.info.startup.source }, "sandbox opened for this session");
   return current;
 }
 
@@ -162,8 +165,8 @@ function closeSandbox(): Promise<void> {
     const old = current;
     current = undefined;
     if (old === undefined) return;
-    console.error(`agentbox mcp: client gone, destroying sandbox ${old.id}`);
-    await old.destroy().catch((err: unknown) => console.error(`agentbox mcp: destroy failed: ${err instanceof Error ? err.message : String(err)}`));
+    log.info({ sandbox: old.id }, "client gone, destroying the session sandbox");
+    await old.destroy().catch((err: unknown) => log.error({ sandbox: old.id, err }, "destroy failed"));
   })();
   return closing;
 }
@@ -173,4 +176,4 @@ server.server.onclose = () => void closeSandbox();
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, leave);
 
 await server.connect(new StdioServerTransport());
-console.error(`agentbox mcp: connected, server ${client["baseUrl"]}`);
+log.info({ server: client["baseUrl"] }, "connected");

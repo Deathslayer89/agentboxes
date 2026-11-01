@@ -1,6 +1,6 @@
 import { ConflictError, NotFoundError } from "../errors.js";
 import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
-import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime } from "./sandboxRuntime.js";
+import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime, SandboxUsage } from "./sandboxRuntime.js";
 
 // In-memory stand-in for tests: no Docker, no gVisor. Records what the service asked for.
 export class FakeRuntime implements SandboxRuntime {
@@ -36,6 +36,11 @@ export class FakeRuntime implements SandboxRuntime {
 
   async egressLog(sandboxId: string): Promise<DeniedRequest[]> {
     return this.deniedLogs.get(sandboxId) ?? [];
+  }
+
+  // Fixed numbers for every known container, so tests can check the report's shape.
+  async usage(handles: string[]): Promise<Record<string, SandboxUsage>> {
+    return Object.fromEntries(handles.filter((h) => this.containers.has(h)).map((h) => [h, { cpuPercent: 12.5, memoryMb: 64 }]));
   }
 
   // What egressKept() answers; tests flip it to simulate a lost proxy.
