@@ -100,6 +100,16 @@ test("plain HTTP: an allowed host is forwarded; the sandbox must authenticate to
   assert.equal((await viaProxy(proxy, `http://127.0.0.1:${upstreamPort}/`, { "proxy-authorization": basic("sbx_nope", "tok") })).status, 407);
 });
 
+test("plain HTTP to a host with a secret is refused and logged, so the secret never travels unencrypted", async () => {
+  await control(proxy, "PUT", "/policies/sbx_secret", { token: "tok", allowHosts: [`127.0.0.1:${upstreamPort}`], secrets: { "127.0.0.1": "Bearer hunter2" } });
+  const reply = await viaProxy(proxy, `http://127.0.0.1:${upstreamPort}/v1`, { "proxy-authorization": basic("sbx_secret", "tok") });
+  assert.equal(reply.status, 403);
+  assert.equal(reply.reason, "host has a secret; use https");
+  assert.doesNotMatch(reply.body, /hunter2/);
+  const log = (await (await control(proxy, "GET", "/policies/sbx_secret/log")).json()) as { denied: { reason: string }[] };
+  assert.equal(log.denied.at(-1)?.reason, "host has a secret; use https");
+});
+
 test("a host outside the allowlist is refused and logged, for plain requests and CONNECT", async () => {
   const denied = await viaProxy(proxy, `http://127.0.0.2:${upstreamPort}/secret`, { "proxy-authorization": basic("sbx_open", "tok") });
   assert.equal(denied.status, 403);

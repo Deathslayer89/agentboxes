@@ -137,7 +137,15 @@ export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = h
       res.end(`agentbox egress proxy: ${verdict.reason}\n`);
       return;
     }
-    forward(req, res, { protocol: "http:", target, port, address: verdict.address, path: url.pathname + url.search, secret: policy.secrets[target.toLowerCase()] });
+    // A secret is only ever added inside TLS, so a host with a secret is refused over plain HTTP.
+    if (policy.secrets[target.toLowerCase()] !== undefined) {
+      const reason = "host has a secret; use https";
+      recordDenied(policy, { method: req.method, host: target, port, reason });
+      res.writeHead(403, reason, { "content-type": "text/plain" });
+      res.end(`agentbox egress proxy: ${reason}\n`);
+      return;
+    }
+    forward(req, res, { protocol: "http:", target, port, address: verdict.address, path: url.pathname + url.search });
   });
 
   proxy.on("connect", async (req, socket, head) => {
