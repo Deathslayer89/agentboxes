@@ -132,7 +132,8 @@ export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = h
     const verdict = await decide(policy, target, port);
     if (!verdict.ok) {
       recordDenied(policy, { method: req.method, host: target, port, reason: verdict.reason });
-      res.writeHead(403, { "content-type": "text/plain" });
+      // The reason rides in the status line too, which clients such as Python's urllib show when they hide the body.
+      res.writeHead(403, verdict.reason, { "content-type": "text/plain" });
       res.end(`agentbox egress proxy: ${verdict.reason}\n`);
       return;
     }
@@ -150,7 +151,7 @@ export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = h
     const verdict = await decide(policy, target, port);
     if (!verdict.ok) {
       recordDenied(policy, { method: "CONNECT", host: target, port, reason: verdict.reason });
-      socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nagentbox egress proxy: ${verdict.reason}\n`);
+      socket.end(`HTTP/1.1 403 ${verdict.reason}\r\nContent-Type: text/plain\r\n\r\nagentbox egress proxy: ${verdict.reason}\n`);
       return;
     }
     const secret = policy.secrets[target.toLowerCase()];

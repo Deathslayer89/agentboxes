@@ -32,23 +32,23 @@ function control(p: Proxy, method: string, path: string, body?: unknown, token =
   return fetch(`http://127.0.0.1:${p.controlPort}${path}`, init);
 }
 
-function viaProxy(p: Proxy, path: string, headers: Record<string, string>): Promise<{ status: number; body: string }> {
+function viaProxy(p: Proxy, path: string, headers: Record<string, string>): Promise<{ status: number; reason: string; body: string }> {
   return new Promise((resolve, reject) => {
     const req = http.request({ host: "127.0.0.1", port: p.proxyPort, method: "GET", path, headers }, (res) => {
       let body = "";
       res.setEncoding("utf8");
       res.on("data", (chunk: string) => (body += chunk));
-      res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, reason: res.statusMessage ?? "", body }));
     });
     req.on("error", reject);
     req.end();
   });
 }
 
-function connectTunnel(p: Proxy, target: string, headers: Record<string, string>): Promise<{ status: number; socket: net.Socket }> {
+function connectTunnel(p: Proxy, target: string, headers: Record<string, string>): Promise<{ status: number; reason: string; socket: net.Socket }> {
   return new Promise((resolve, reject) => {
     const req = http.request({ host: "127.0.0.1", port: p.proxyPort, method: "CONNECT", path: target, headers });
-    req.on("connect", (res, socket) => resolve({ status: res.statusCode ?? 0, socket }));
+    req.on("connect", (res, socket) => resolve({ status: res.statusCode ?? 0, reason: res.statusMessage ?? "", socket }));
     req.on("error", reject);
     req.end();
   });
@@ -103,8 +103,10 @@ test("plain HTTP: an allowed host is forwarded; the sandbox must authenticate to
 test("a host outside the allowlist is refused and logged, for plain requests and CONNECT", async () => {
   const denied = await viaProxy(proxy, `http://127.0.0.2:${upstreamPort}/secret`, { "proxy-authorization": basic("sbx_open", "tok") });
   assert.equal(denied.status, 403);
+  assert.equal(denied.reason, "host not in allowHosts", "the reason is in the status line, which clients show even when they hide the body");
   const tunnel = await connectTunnel(proxy, "example.org:443", { "proxy-authorization": basic("sbx_open", "tok") });
   assert.equal(tunnel.status, 403);
+  assert.equal(tunnel.reason, "host not in allowHosts");
   tunnel.socket.destroy();
   const log = (await (await control(proxy, "GET", "/policies/sbx_open/log")).json()) as { denied: Array<{ host: string; port: number; method: string; reason: string }> };
   assert.deepEqual(
@@ -120,6 +122,7 @@ test("a bare rule allows ports 80 and 443 only; \"host:port\" allows that one po
   await control(proxy, "PUT", "/policies/sbx_ports", { token: "tok", allowHosts: ["127.0.0.1"] });
   const refused = await viaProxy(proxy, `http://127.0.0.1:${upstreamPort}/`, { "proxy-authorization": basic("sbx_ports", "tok") });
   assert.equal(refused.status, 403);
+  assert.equal(refused.reason, `port ${upstreamPort} not allowed for 127.0.0.1`);
   assert.match(refused.body, new RegExp(`port ${upstreamPort} not allowed for 127.0.0.1`));
   const log = (await (await control(proxy, "GET", "/policies/sbx_ports/log")).json()) as { denied: Array<{ reason: string }> };
   assert.deepEqual(log.denied.map((entry) => entry.reason), [`port ${upstreamPort} not allowed for 127.0.0.1`]);
