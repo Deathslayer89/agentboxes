@@ -65,14 +65,16 @@ if (adopted.length > 0) console.log(`agentbox: adopted ${adopted.length} running
 if (lost.length > 0) console.log(`agentbox: ${lost.length} sandbox(es) from the previous run did not survive: ${lost.join(", ")}`);
 const leftovers = await service.reap();
 if (leftovers.orphans.length > 0) console.log(`agentbox: removed ${leftovers.orphans.length} orphaned container(s)`);
+if (leftovers.dead.length > 0) console.log(`agentbox: dropped ${leftovers.dead.length} dead pool container(s)`);
 for (const [template, s] of Object.entries(pools.stats())) console.log(`agentbox: warm pool ${template}: ${s.ready} of ${s.size} ready`);
 
 const reaper = setInterval(() => {
   service
     .reap()
-    .then(({ expired, orphans }) => {
+    .then(({ expired, orphans, dead }) => {
       if (expired.length > 0) console.log(`reaper: expired ${expired.join(", ")}`);
       if (orphans.length > 0) console.log(`reaper: removed orphans ${orphans.join(", ")}`);
+      if (dead.length > 0) console.log(`reaper: dropped dead pool containers ${dead.join(", ")}`);
     })
     .catch((err) => console.error("reaper:", err));
 }, config.reaperIntervalMs);

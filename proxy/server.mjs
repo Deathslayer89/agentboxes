@@ -5,7 +5,7 @@ import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 import { createCa, issueCert } from "./certs.mjs";
-import { hostAllowed, isPublicAddress, parseProxyAuth, splitHostPort } from "./policy.mjs";
+import { isPublicAddress, parseProxyAuth, refusalFor, splitHostPort } from "./policy.mjs";
 
 // Denied attempts kept per sandbox; older entries are dropped.
 const MAX_DENIED = 1000;
@@ -16,13 +16,15 @@ const MAX_DENIED = 1000;
  * per-sandbox policies through the control port with a bearer admin token.
  *
  * A host with a secret is intercepted: the proxy terminates TLS with a certificate from its
- * own CA, replaces the Authorization header, and opens its own TLS connection upstream.
- * Every other allowed host is a plain tunnel the proxy cannot read.
+ * own CA, sets the secret header (Authorization unless the policy names another), and opens
+ * its own TLS connection upstream. Every other allowed host is a plain tunnel the proxy cannot read.
  *
- * Options beyond adminToken exist for tests; main.mjs reads production values from the environment.
- * @param {{ adminToken: string, host?: string, proxyPort?: number, controlPort?: number, allowPrivateTargets?: boolean, upstreamCa?: string }} options
+ * The control API listens on controlHost, which main.mjs sets to the default-bridge address so
+ * sandbox networks cannot reach it. Options beyond adminToken exist for tests; main.mjs reads
+ * production values from the environment.
+ * @param {{ adminToken: string, host?: string, controlHost?: string, proxyPort?: number, controlPort?: number, allowPrivateTargets?: boolean, upstreamCa?: string }} options
  */
-export async function startProxy({ adminToken, host = "0.0.0.0", proxyPort = 0, controlPort = 0, allowPrivateTargets = false, upstreamCa = undefined }) {
+export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = host, proxyPort = 0, controlPort = 0, allowPrivateTargets = false, upstreamCa = undefined }) {
   // sandboxId -> { token, allowHosts, secrets, denied }
   const policies = new Map();
   const ca = await createCa();
@@ -46,8 +48,9 @@ export async function startProxy({ adminToken, host = "0.0.0.0", proxyPort = 0, 
   }
 
   // Allowlist first, then the resolved address, so an allowed name cannot point at a private network.
-  async function decide(policy, target) {
-    if (!hostAllowed(target, policy.allowHosts)) return { ok: false, reason: "host not in allowHosts" };
+  async function decide(policy, target, port) {
+    const refusal = refusalFor(target, port, policy.allowHosts);
+    if (refusal !== undefined) return { ok: false, reason: refusal };
     let address = target;
     if (!net.isIP(target)) {
       try {
@@ -71,7 +74,7 @@ export async function startProxy({ adminToken, host = "0.0.0.0", proxyPort = 0, 
     const headers = { ...req.headers, host: port === defaultPort ? target : `${target}:${port}` };
     delete headers["proxy-authorization"];
     delete headers["proxy-connection"];
-    if (secret !== undefined) headers.authorization = secret;
+    if (secret !== undefined) headers[secret.header] = secret.value;
     const options = { host: address, port, method: req.method, path, headers, servername: net.isIP(target) ? "" : target };
     if (upstreamCa !== undefined) options.ca = upstreamCa;
     const upstream = (protocol === "https:" ? https : http).request(options, (response) => {
@@ -120,7 +123,7 @@ export async function startProxy({ adminToken, host = "0.0.0.0", proxyPort = 0, 
     }
     const target = url.hostname;
     const port = Number(url.port || 80);
-    const verdict = await decide(policy, target);
+    const verdict = await decide(policy, target, port);
     if (!verdict.ok) {
       recordDenied(policy, { method: req.method, host: target, port, reason: verdict.reason });
       res.writeHead(403, { "content-type": "text/plain" });
@@ -138,7 +141,7 @@ export async function startProxy({ adminToken, host = "0.0.0.0", proxyPort = 0, 
       socket.end('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="agentbox"\r\n\r\n');
       return;
     }
-    const verdict = await decide(policy, target);
+    const verdict = await decide(policy, target, port);
     if (!verdict.ok) {
       recordDenied(policy, { method: "CONNECT", host: target, port, reason: verdict.reason });
       socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nagentbox egress proxy: ${verdict.reason}\n`);
@@ -176,7 +179,7 @@ export async function startProxy({ adminToken, host = "0.0.0.0", proxyPort = 0, 
     if (resource === "policies" && id !== undefined) {
       if (req.method === "PUT" && action === undefined) {
         const body = JSON.parse(await readBody(req));
-        policies.set(id, { token: body.token, allowHosts: body.allowHosts ?? [], secrets: lowercaseKeys(body.secrets ?? {}), denied: [] });
+        policies.set(id, { token: body.token, allowHosts: body.allowHosts ?? [], secrets: normalizeSecrets(body.secrets ?? {}), denied: [] });
         return json(200, { ok: true });
       }
       if (req.method === "DELETE" && action === undefined) {
@@ -192,7 +195,7 @@ export async function startProxy({ adminToken, host = "0.0.0.0", proxyPort = 0, 
   });
 
   await listen(proxy, proxyPort, host);
-  await listen(control, controlPort, host);
+  await listen(control, controlPort, controlHost);
   return {
     proxyPort: proxy.address().port,
     controlPort: control.address().port,
@@ -225,8 +228,14 @@ function readBody(req) {
   });
 }
 
-function lowercaseKeys(object) {
-  return Object.fromEntries(Object.entries(object).map(([key, value]) => [key.toLowerCase(), value]));
+// host -> { header, value } with host and header lowercased; a bare string is an Authorization value.
+function normalizeSecrets(object) {
+  return Object.fromEntries(
+    Object.entries(object).map(([host, secret]) => [
+      host.toLowerCase(),
+      typeof secret === "string" ? { header: "authorization", value: secret } : { header: String(secret.header).toLowerCase(), value: secret.value },
+    ]),
+  );
 }
 
 function sameString(a, b) {

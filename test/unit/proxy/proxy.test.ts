@@ -73,7 +73,7 @@ before(async () => {
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   upstreamPort = (upstream.address() as net.AddressInfo).port;
   proxy = await startProxy({ adminToken: "adm", host: "127.0.0.1", allowPrivateTargets: true });
-  await control(proxy, "PUT", "/policies/sbx_open", { token: "tok", allowHosts: ["127.0.0.1"] });
+  await control(proxy, "PUT", "/policies/sbx_open", { token: "tok", allowHosts: [`127.0.0.1:${upstreamPort}`] });
 });
 
 after(async () => {
@@ -115,6 +115,17 @@ test("a host outside the allowlist is refused and logged, for plain requests and
   );
 });
 
+test("a bare rule allows ports 80 and 443 only; \"host:port\" allows that one port", async () => {
+  await control(proxy, "PUT", "/policies/sbx_ports", { token: "tok", allowHosts: ["127.0.0.1"] });
+  const refused = await viaProxy(proxy, `http://127.0.0.1:${upstreamPort}/`, { "proxy-authorization": basic("sbx_ports", "tok") });
+  assert.equal(refused.status, 403);
+  assert.match(refused.body, new RegExp(`port ${upstreamPort} not allowed for 127.0.0.1`));
+  const log = (await (await control(proxy, "GET", "/policies/sbx_ports/log")).json()) as { denied: Array<{ reason: string }> };
+  assert.deepEqual(log.denied.map((entry) => entry.reason), [`port ${upstreamPort} not allowed for 127.0.0.1`]);
+  await control(proxy, "PUT", "/policies/sbx_ports", { token: "tok", allowHosts: [`127.0.0.1:${upstreamPort}`] });
+  assert.equal((await viaProxy(proxy, `http://127.0.0.1:${upstreamPort}/`, { "proxy-authorization": basic("sbx_ports", "tok") })).status, 200);
+});
+
 test("CONNECT to an allowed host without a secret is a blind tunnel", async () => {
   const { status, socket } = await connectTunnel(proxy, `127.0.0.1:${upstreamPort}`, { "proxy-authorization": basic("sbx_open", "tok") });
   assert.equal(status, 200);
@@ -141,7 +152,7 @@ test("loopback, private and metadata addresses are refused even when allowlisted
   }
 });
 
-test("a host with a secret is intercepted: the proxy's own certificate is presented and Authorization is replaced", { skip: !hasOpenssl }, async () => {
+test("a host with a secret is intercepted: the proxy's own certificate is presented and the secret header is set", { skip: !hasOpenssl }, async () => {
   const upstreamCa = await createCa("test upstream CA");
   const leaf = await issueCert(upstreamCa, "127.0.0.1");
   const secureUpstream = https.createServer({ key: leaf.key, cert: leaf.cert }, echoHandler);
@@ -149,20 +160,26 @@ test("a host with a secret is intercepted: the proxy's own certificate is presen
   const securePort = (secureUpstream.address() as net.AddressInfo).port;
   const mitm = await startProxy({ adminToken: "adm", host: "127.0.0.1", allowPrivateTargets: true, upstreamCa: upstreamCa.cert });
   try {
-    await control(mitm, "PUT", "/policies/s", { token: "t", allowHosts: ["127.0.0.1"], secrets: { "127.0.0.1": "Bearer hunter2" } });
-    const { status, socket } = await connectTunnel(mitm, `127.0.0.1:${securePort}`, { "proxy-authorization": basic("s", "t") });
-    assert.equal(status, 200);
-    // The client trusts only the proxy's CA, so a successful handshake proves the proxy terminated TLS.
-    const secure = tls.connect({ socket, ca: [mitm.caCert], host: "127.0.0.1" });
-    await new Promise<void>((resolve, reject) => {
-      secure.once("secureConnect", resolve);
-      secure.once("error", reject);
-    });
-    assert.equal(secure.authorized, true);
-    const reply = await rawRequest(secure, `GET /api HTTP/1.1\r\nHost: 127.0.0.1:${securePort}\r\nAuthorization: Bearer fake\r\nConnection: close\r\n\r\n`);
-    const echoed = bodyOf(reply);
-    assert.equal(echoed.url, "/api");
-    assert.equal(echoed.headers.authorization, "Bearer hunter2");
+    const viaMitm = async (policyId: string) => {
+      const { status, socket } = await connectTunnel(mitm, `127.0.0.1:${securePort}`, { "proxy-authorization": basic(policyId, "t") });
+      assert.equal(status, 200);
+      // The client trusts only the proxy's CA, so a successful handshake proves the proxy terminated TLS.
+      const secure = tls.connect({ socket, ca: [mitm.caCert], host: "127.0.0.1" });
+      await new Promise<void>((resolve, reject) => {
+        secure.once("secureConnect", resolve);
+        secure.once("error", reject);
+      });
+      assert.equal(secure.authorized, true);
+      return bodyOf(await rawRequest(secure, `GET /api HTTP/1.1\r\nHost: 127.0.0.1:${securePort}\r\nAuthorization: Bearer fake\r\nConnection: close\r\n\r\n`));
+    };
+    await control(mitm, "PUT", "/policies/s", { token: "t", allowHosts: [`127.0.0.1:${securePort}`], secrets: { "127.0.0.1": "Bearer hunter2" } });
+    const bearer = await viaMitm("s");
+    assert.equal(bearer.url, "/api");
+    assert.equal(bearer.headers.authorization, "Bearer hunter2");
+    await control(mitm, "PUT", "/policies/s2", { token: "t", allowHosts: [`127.0.0.1:${securePort}`], secrets: { "127.0.0.1": { header: "X-Api-Key", value: "hunter2" } } });
+    const apiKey = await viaMitm("s2");
+    assert.equal(apiKey.headers["x-api-key"], "hunter2");
+    assert.equal(apiKey.headers.authorization, "Bearer fake", "a secret in another header leaves Authorization alone");
   } finally {
     await mitm.close();
     secureUpstream.close();

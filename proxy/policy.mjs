@@ -1,13 +1,27 @@
 import { isIP } from "node:net";
 
-// "*.example.com" matches any subdomain but not example.com itself; a plain name matches exactly.
-export function hostAllowed(host, allowHosts) {
+/**
+ * Rules are "host" or "host:port". A bare host allows ports 80 and 443; "*.example.com" matches
+ * any subdomain but not example.com itself. Returns the reason for refusal, or undefined when allowed.
+ */
+export function refusalFor(host, port, allowHosts) {
   const name = host.toLowerCase();
-  return allowHosts.some((rule) => {
-    const pattern = rule.toLowerCase();
-    if (pattern.startsWith("*.")) return name.endsWith(pattern.slice(1)) && name.length > pattern.length - 1;
-    return name === pattern;
-  });
+  let nameMatched = false;
+  for (const rule of allowHosts) {
+    const { host: pattern, port: rulePort } = splitRule(rule.toLowerCase());
+    const matches = pattern.startsWith("*.") ? name.endsWith(pattern.slice(1)) && name.length > pattern.length - 1 : name === pattern;
+    if (!matches) continue;
+    nameMatched = true;
+    if (rulePort === undefined ? port === 80 || port === 443 : port === rulePort) return undefined;
+  }
+  return nameMatched ? `port ${port} not allowed for ${host}` : "host not in allowHosts";
+}
+
+// "host:port" -> { host, port }; a bare host or an IPv6 literal has no port.
+function splitRule(rule) {
+  const match = /^(.+):(\d{1,5})$/.exec(rule);
+  if (match === null || isIP(rule) === 6) return { host: rule, port: undefined };
+  return { host: match[1], port: Number(match[2]) };
 }
 
 /**

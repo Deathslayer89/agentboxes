@@ -55,6 +55,18 @@ test("drain destroys the ready containers and stops refilling", async () => {
   assert.equal(pool.claim(), undefined);
 });
 
+test("prune forgets ready containers that are no longer running and frees their slots", async () => {
+  const runtime = new FakeRuntime();
+  const pool = new WarmPool(runtime, limits, 2, "img", "default");
+  await pool.fill();
+  assert.deepEqual(pool.prune(new Set(["ctr-2"])), ["pool_default_1"]);
+  assert.equal(pool.stats().ready, 1);
+  assert.equal(pool.holds("pool_default_1"), false);
+  assert.equal(pool.claim(), "ctr-2");
+  await pool.fill();
+  assert.equal(pool.stats().ready, 2);
+});
+
 test("fill starts all missing containers at once", async () => {
   const runtime = new FakeRuntime();
   const pool = new WarmPool(runtime, limits, 3, "img", "default");

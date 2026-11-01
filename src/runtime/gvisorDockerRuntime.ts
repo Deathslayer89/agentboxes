@@ -238,9 +238,9 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     if (labels[LABEL_NETWORKED] === "1") await this.egress.detach(labels[LABEL_ID] ?? "");
   }
 
-  async listManaged(): Promise<Array<{ sandboxId: string; handle: string }>> {
+  async listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean }>> {
     const containers = await this.docker.listContainers({ all: true, filters: { label: [`${LABEL}=1`] } });
-    return containers.map((c) => ({ sandboxId: c.Labels[LABEL_ID] ?? "", handle: c.Id }));
+    return containers.map((c) => ({ sandboxId: c.Labels[LABEL_ID] ?? "", handle: c.Id, running: c.State === "running" }));
   }
 
   /**

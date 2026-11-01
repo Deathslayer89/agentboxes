@@ -7,7 +7,7 @@ import { LOCAL_OWNER } from "../models/apiKey.js";
 import { DEFAULT_TEMPLATE, type Template } from "../models/template.js";
 import type { SandboxRepository } from "../repositories/sandboxRepository.js";
 import type { TemplateRepository } from "../repositories/templateRepository.js";
-import type { DeniedRequest, EgressPolicy, OutputListener, SandboxRuntime } from "../runtime/sandboxRuntime.js";
+import type { DeniedRequest, EgressPolicy, OutputListener, SandboxRuntime, SecretHeader } from "../runtime/sandboxRuntime.js";
 import { Metrics } from "./metrics.js";
 import type { PoolStats, WarmPools } from "./warmPool.js";
 import { resolveWorkspaceDir, resolveWorkspacePath } from "./workspacePath.js";
@@ -97,13 +97,16 @@ export class SandboxService {
    */
   private egressFor(request: CreateSandboxRequest): { policy: EgressPolicy; network: SandboxNetwork } | undefined {
     if (request.allowHosts === undefined && request.secrets === undefined) return undefined;
-    const secrets: Record<string, string> = {};
-    for (const [host, envName] of Object.entries(request.secrets ?? {})) {
-      const value = this.config.secretsEnv[envName];
-      if (value === undefined || value === "") throw new ValidationError(`secret for ${host}: ${envName} is not set in the server's environment`);
-      secrets[host] = `Bearer ${value}`;
+    const secrets: Record<string, SecretHeader> = {};
+    for (const [host, raw] of Object.entries(request.secrets ?? {})) {
+      const spec = typeof raw === "string" ? { env: raw } : raw;
+      const value = this.config.secretsEnv[spec.env];
+      if (value === undefined || value === "") throw new ValidationError(`secret for ${host}: ${spec.env} is not set in the server's environment`);
+      const header = spec.header ?? "Authorization";
+      const prefix = spec.prefix ?? (header.toLowerCase() === "authorization" ? "Bearer " : "");
+      secrets[host] = { header, value: prefix + value };
     }
-    // A host with a secret is allowed without listing it twice.
+    // A host with a secret is allowed on 80 and 443 without listing it twice.
     const allowHosts = [...new Set([...(request.allowHosts ?? []), ...Object.keys(secrets)])];
     return { policy: { allowHosts, secrets }, network: { allowHosts, secretHosts: Object.keys(secrets) } };
   }
@@ -253,10 +256,11 @@ export class SandboxService {
   }
 
   /**
-   * One reaper pass: destroy expired sandboxes, forget long-gone records, and remove
-   * containers the runtime still has that this server does not know about.
+   * One reaper pass: destroy expired sandboxes, forget long-gone records, drop pool containers
+   * that died while waiting, and remove containers the runtime still has that this server does
+   * not know about.
    */
-  async reap(): Promise<{ expired: string[]; orphans: string[] }> {
+  async reap(): Promise<{ expired: string[]; orphans: string[]; dead: string[] }> {
     const now = this.clock.now().getTime();
     const expired: string[] = [];
     for (const sandbox of this.sandboxes.findAll()) {
@@ -271,8 +275,11 @@ export class SandboxService {
     }
 
     const orphans: string[] = [];
+    const managed = await this.runtime.listManaged();
+    // A dead pool container loses its slot first, so the orphan pass below removes it.
+    const dead = this.pools.prune(new Set(managed.filter((c) => c.running).map((c) => c.handle)));
     const liveHandles = new Set(this.sandboxes.findAll().filter((s) => !isGone(s)).map((s) => s.handle));
-    for (const { sandboxId, handle } of await this.runtime.listManaged()) {
+    for (const { sandboxId, handle } of managed) {
       const known = this.sandboxes.findById(sandboxId);
       if (known !== undefined && !isGone(known)) continue; // started for a sandbox that is live or still starting
       if (liveHandles.has(handle)) continue; // claimed from the pool; its label still names the pool slot
@@ -281,7 +288,7 @@ export class SandboxService {
       orphans.push(sandboxId || handle);
     }
     await this.pools.fill();
-    return { expired, orphans };
+    return { expired, orphans, dead };
   }
 
   // Only memory, cpus, disk and pids shape the container, so a custom TTL can still use the pool.
@@ -303,11 +310,12 @@ export class SandboxService {
     }
   }
 
-  // Fill in server defaults and refuse anything above the server maximums.
+  // Fill in server defaults and refuse anything above the server maximums. Only limit fields are taken from the request.
   private applyLimits(request: CreateSandboxRequest): SandboxLimits {
     const { defaults, maximums } = this.config;
-    const limits: SandboxLimits = { ...defaults, ...request };
+    const limits: SandboxLimits = { ...defaults };
     for (const key of Object.keys(maximums) as (keyof SandboxLimits)[]) {
+      limits[key] = request[key] ?? defaults[key];
       if (limits[key] > maximums[key]) {
         throw new ValidationError(`${key} ${limits[key]} exceeds the server maximum of ${maximums[key]}`);
       }

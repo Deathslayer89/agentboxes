@@ -12,12 +12,19 @@ export interface SandboxLimits {
   ttlSeconds: number;
 }
 
+// How the proxy sends one secret: the header (default Authorization) and what goes before the value (default "Bearer " for Authorization, nothing otherwise).
+export interface SecretSpec {
+  env: string;
+  header?: string;
+  prefix?: string;
+}
+
 export interface CreateOptions extends Partial<SandboxLimits> {
   template?: string;
-  // Host names the sandbox may reach through the egress proxy; "*.example.com" matches subdomains.
+  // Rules the sandbox may reach through the egress proxy: "pypi.org" (ports 80 and 443), "db.example.com:5432", "*.example.com".
   allowHosts?: string[];
-  // host -> name of an environment variable on the server, sent by the proxy as "Authorization: Bearer <value>".
-  secrets?: Record<string, string>;
+  // host -> the name of an environment variable on the server, sent as "Authorization: Bearer <value>", or a SecretSpec for another header.
+  secrets?: Record<string, string | SecretSpec>;
 }
 
 export interface SandboxNetwork {

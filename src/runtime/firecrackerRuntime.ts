@@ -139,8 +139,8 @@ export class FirecrackerRuntime implements SandboxRuntime {
   }
 
   // Only VMs started by this process can be driven; a previous run's VMs were killed at init.
-  async listManaged(): Promise<Array<{ sandboxId: string; handle: string }>> {
-    return [...this.vms.keys()].map((id) => ({ sandboxId: id, handle: id }));
+  async listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean }>> {
+    return [...this.vms.keys()].map((id) => ({ sandboxId: id, handle: id, running: true }));
   }
 
   async egressLog(): Promise<DeniedRequest[]> {

@@ -63,7 +63,7 @@ class Agentbox:
         self,
         template: Optional[str] = None,
         allow_hosts: Optional[List[str]] = None,
-        secrets: Optional[Dict[str, str]] = None,
+        secrets: Optional[Dict[str, Union[str, Dict[str, str]]]] = None,
         memory_mb: Optional[int] = None,
         cpus: Optional[float] = None,
         disk_mb: Optional[int] = None,

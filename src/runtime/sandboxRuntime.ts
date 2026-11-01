@@ -3,10 +3,16 @@ import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
 // Receives output chunks as they arrive, before the command finishes.
 export type OutputListener = (stream: "stdout" | "stderr", chunk: Buffer) => void;
 
-// What the egress proxy enforces for one sandbox. Secret values are full header values, for example "Bearer sk-...".
+// One header the proxy sets on every request to a secret host. The value is complete, for example "Bearer sk-...".
+export interface SecretHeader {
+  header: string;
+  value: string;
+}
+
+// What the egress proxy enforces for one sandbox. Rules are "host" (ports 80 and 443) or "host:port".
 export interface EgressPolicy {
   allowHosts: string[];
-  secrets: Record<string, string>;
+  secrets: Record<string, SecretHeader>;
 }
 
 export interface DeniedRequest {
@@ -72,10 +78,11 @@ export interface SandboxRuntime {
   destroy(handle: string): Promise<void>;
 
   /**
-   * Every container this backend created that still exists, so the reaper can find
-   * orphans (containers the server no longer knows about, for example after a restart).
+   * Every container this backend created that still exists, running or not, so the reaper can
+   * find orphans (containers the server no longer knows about, for example after a restart) and
+   * the pool can drop containers that died while waiting.
    */
-  listManaged(): Promise<Array<{ sandboxId: string; handle: string }>>;
+  listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean }>>;
 
   // True when sandboxes with a network from before a server restart still have their proxy policies.
   egressKept(): boolean;

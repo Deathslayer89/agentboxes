@@ -196,6 +196,9 @@ test("N1/N2/N3: an allowlisted sandbox reaches only the listed hosts; refusals a
     assert.equal(ok.stdout.trim(), "200", ok.stderr);
     assert.notEqual((await fetchStatus(service, box.id, "https://example.com/")).exitCode, 0, "example.com is not allowlisted");
     assert.notEqual((await fetchStatus(service, box.id, "http://169.254.169.254/latest/meta-data/")).exitCode, 0, "metadata is blocked even though allowlisted");
+    assert.notEqual((await fetchStatus(service, box.id, "https://pypi.org:8443/")).exitCode, 0, "a port other than 80 and 443 is refused");
+    const toControl = await service.exec(box.id, { cmd: ["python", "-c", "import os, socket, urllib.parse\nu = urllib.parse.urlparse(os.environ['HTTP_PROXY'])\nsocket.create_connection((u.hostname, 3129), timeout=3)"] });
+    assert.notEqual(toControl.exitCode, 0, "the proxy's control port is not reachable from the sandbox");
     const pip = await service.exec(box.id, { cmd: ["pip", "download", "--no-deps", "-q", "-d", "/tmp/dl", "six"], timeoutMs: 120_000 });
     assert.equal(pip.exitCode, 0, pip.stderr);
     const toHost = await service.exec(box.id, { cmd: ["python", "-c", "import socket\nsocket.create_connection(('172.17.0.1', 7788), timeout=3)"] });
@@ -206,6 +209,7 @@ test("N1/N2/N3: an allowlisted sandbox reaches only the listed hosts; refusals a
       [
         ["CONNECT", "example.com", "host not in allowHosts"],
         ["GET", "169.254.169.254", "resolves to a private address (169.254.169.254)"],
+        ["CONNECT", "pypi.org", "port 8443 not allowed for pypi.org"],
       ],
     );
   } finally {

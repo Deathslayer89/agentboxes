@@ -15,6 +15,8 @@ export class FakeRuntime implements SandboxRuntime {
   startGate: Promise<void> | undefined;
   // When set, merged into the next exec() result, for example { timedOut: true, exitCode: 137 }.
   nextExecResult: Partial<ExecResult> | undefined;
+  // Handles whose container has exited; listManaged() reports them as not running.
+  readonly dead = new Set<string>();
   private counter = 0;
 
   async init(): Promise<void> {}
@@ -83,8 +85,8 @@ export class FakeRuntime implements SandboxRuntime {
     this.containers.delete(handle);
   }
 
-  async listManaged(): Promise<Array<{ sandboxId: string; handle: string }>> {
-    return [...this.containers].map(([handle, c]) => ({ sandboxId: c.sandboxId, handle }));
+  async listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean }>> {
+    return [...this.containers].map(([handle, c]) => ({ sandboxId: c.sandboxId, handle, running: !this.dead.has(handle) }));
   }
 
   private container(handle: string) {

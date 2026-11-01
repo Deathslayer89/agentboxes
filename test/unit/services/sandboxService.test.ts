@@ -139,6 +139,18 @@ test("the reaper leaves pool containers and claimed pool containers alone", asyn
   assert.equal(runtime.containers.size, 2);
 });
 
+test("the reaper removes a pool container that died while waiting and refills the pool", async () => {
+  const { service, runtime, pools } = makeService({ POOL_SIZES: "default:1" });
+  await pools.fill();
+  runtime.dead.add("ctr-1");
+  const { orphans, dead } = await service.reap();
+  assert.deepEqual(dead, ["pool_default_1"]);
+  assert.deepEqual(orphans, ["pool_default_1"]);
+  assert.equal(runtime.containers.has("ctr-1"), false);
+  assert.equal(pools.stats().default?.ready, 1);
+  assert.equal((await service.create()).handle, "ctr-2");
+});
+
 test("a template picks its image and its own pool; an unknown template is refused", async () => {
   const { service, runtime, pools } = makeService({ POOL_SIZES: "default:0,data-science:1" });
   await pools.fill();
@@ -161,10 +173,13 @@ test("a template picks its image and its own pool; an unknown template is refuse
 test("allowHosts and secrets become an egress policy; the value comes from the server env and never touches the record", async () => {
   const { service, runtime, pools } = makeService({ POOL_SIZES: "default:1", OPENAI_API_KEY: "sk-test" });
   await pools.fill();
-  const box = await service.create({ allowHosts: ["pypi.org"], secrets: { "api.openai.com": "OPENAI_API_KEY" } });
+  const box = await service.create({ allowHosts: ["pypi.org"], secrets: { "api.openai.com": "OPENAI_API_KEY", "api.anthropic.com": { env: "OPENAI_API_KEY", header: "x-api-key" } } });
   assert.equal(box.startup.source, "cold", "a sandbox with a network never comes from the pool");
-  assert.deepEqual(box.network, { allowHosts: ["pypi.org", "api.openai.com"], secretHosts: ["api.openai.com"] });
-  assert.deepEqual(runtime.containers.get(box.handle ?? "")?.egress, { allowHosts: ["pypi.org", "api.openai.com"], secrets: { "api.openai.com": "Bearer sk-test" } });
+  assert.deepEqual(box.network, { allowHosts: ["pypi.org", "api.openai.com", "api.anthropic.com"], secretHosts: ["api.openai.com", "api.anthropic.com"] });
+  assert.deepEqual(runtime.containers.get(box.handle ?? "")?.egress, {
+    allowHosts: ["pypi.org", "api.openai.com", "api.anthropic.com"],
+    secrets: { "api.openai.com": { header: "Authorization", value: "Bearer sk-test" }, "api.anthropic.com": { header: "x-api-key", value: "sk-test" } },
+  });
   assert.equal(JSON.stringify(box).includes("sk-test"), false);
   await assert.rejects(service.create({ secrets: { "api.openai.com": "MISSING_KEY" } }), /MISSING_KEY is not set/);
   const plain = await service.create();

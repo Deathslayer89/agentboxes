@@ -87,6 +87,16 @@ export class WarmPool {
     return true;
   }
 
+  // Forgets ready containers that are no longer running, so they are never handed out. Returns their slot ids.
+  prune(running: Set<string>): string[] {
+    const dead = this.ready.filter((entry) => !running.has(entry.handle));
+    for (const entry of dead) {
+      this.ready.splice(this.ready.indexOf(entry), 1);
+      this.slots.delete(entry.slotId);
+    }
+    return dead.map((entry) => entry.slotId);
+  }
+
   // Destroys every ready container and stops refilling. Used at shutdown.
   async drain(): Promise<void> {
     this.closed = true;
@@ -126,6 +136,10 @@ export class WarmPools {
 
   async fill(): Promise<void> {
     await Promise.all([...this.pools.values()].map((pool) => pool.fill()));
+  }
+
+  prune(running: Set<string>): string[] {
+    return [...this.pools.values()].flatMap((pool) => pool.prune(running));
   }
 
   async drain(): Promise<void> {

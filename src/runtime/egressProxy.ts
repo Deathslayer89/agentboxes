@@ -66,8 +66,8 @@ export class EgressProxyManager {
       return;
     }
     try {
-      await this.buildImage();
-      if (await this.reuseRunning()) return;
+      const source = await this.buildImage();
+      if (await this.reuseRunning(source)) return;
       await this.removeLeftovers();
       this.adminToken = randomBytes(24).toString("hex");
       this.settings.set(ADMIN_TOKEN_SETTING, this.adminToken);
@@ -77,12 +77,12 @@ export class EgressProxyManager {
     }
   }
 
-  // Keeps the proxy from the previous server run when it is still up and answers to the stored token.
-  private async reuseRunning(): Promise<boolean> {
+  // Keeps the proxy from the previous server run when it is still up, was built from the same source, and answers to the stored token.
+  private async reuseRunning(source: string): Promise<boolean> {
     const token = this.settings.get(ADMIN_TOKEN_SETTING);
     if (token === undefined) return false;
     const [running] = await this.docker.listContainers({ filters: { label: [`${LABEL_PROXY}=1`], status: ["running"] } });
-    if (running === undefined) return false;
+    if (running === undefined || running.Labels[LABEL_SOURCE] !== source) return false;
     const info = (await this.docker.getContainer(running.Id).inspect()) as { NetworkSettings: { Networks: Record<string, { IPAddress: string }> } };
     const ip = info.NetworkSettings.Networks.bridge?.IPAddress;
     if (!ip) return false;
@@ -155,14 +155,14 @@ export class EgressProxyManager {
     this.containerId = undefined;
   }
 
-  // Builds the image from proxy/ unless an image built from the same source is already there.
-  private async buildImage(): Promise<void> {
+  // Builds the image from proxy/ unless an image built from the same source is already there. Returns the source hash.
+  private async buildImage(): Promise<string> {
     const hash = createHash("sha256");
     for (const file of SOURCE_FILES) hash.update(readFileSync(SOURCE_DIR + file));
     const source = hash.digest("hex");
     try {
       const info = (await this.docker.getImage(IMAGE).inspect()) as { Config?: { Labels?: Record<string, string> } };
-      if (info.Config?.Labels?.[LABEL_SOURCE] === source) return;
+      if (info.Config?.Labels?.[LABEL_SOURCE] === source) return source;
     } catch (e) {
       if (!isNotFound(e)) throw e;
     }
@@ -175,6 +175,7 @@ export class EgressProxyManager {
         (event: { error?: string }) => event.error && reject(new Error(event.error)),
       );
     });
+    return source;
   }
 
   // A proxy container from a previous run has a stale token; networks without containers are leftovers too.
