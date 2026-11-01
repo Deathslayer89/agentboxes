@@ -129,6 +129,8 @@ export class EgressProxyManager {
       await this.control("PUT", `/policies/${sandboxId}`, { token, subnet, allowHosts: policy.allowHosts, secrets: policy.secrets });
       const proxyUrl = `http://${sandboxId}:${token}@${proxyIp}:${PROXY_PORT}`;
       const env = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"].map((key) => `${key}=${proxyUrl}`);
+      // The sandbox's own loopback never goes through the proxy, so a dev server or a test server inside keeps working.
+      env.push("NO_PROXY=localhost,127.0.0.1,::1", "no_proxy=localhost,127.0.0.1,::1");
       const hasSecrets = Object.keys(policy.secrets).length > 0;
       this.log.debug({ sandbox: sandboxId, network: name, subnet, allowHosts: policy.allowHosts, secretHosts: Object.keys(policy.secrets) }, "sandbox network attached");
       if (hasSecrets) {

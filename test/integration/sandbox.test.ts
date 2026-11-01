@@ -202,6 +202,11 @@ test("N1/N2/N3: an allowlisted sandbox reaches only the listed hosts; refusals a
     assert.notEqual((await fetchStatus(service, box.id, "https://pypi.org:8443/")).exitCode, 0, "a port other than 80 and 443 is refused");
     const toControl = await service.exec(box.id, { cmd: ["python", "-c", "import os, socket, urllib.parse\nu = urllib.parse.urlparse(os.environ['HTTP_PROXY'])\nsocket.create_connection((u.hostname, 3129), timeout=3)"] });
     assert.notEqual(toControl.exitCode, 0, "the proxy's control port is not reachable from the sandbox");
+    const loopback = await service.exec(box.id, {
+      cmd: ["python", "-c", "import http.server, threading, urllib.request\ns = http.server.HTTPServer(('127.0.0.1', 8765), http.server.SimpleHTTPRequestHandler)\nthreading.Thread(target=s.serve_forever, daemon=True).start()\nprint(urllib.request.urlopen('http://127.0.0.1:8765/', timeout=5).status)"],
+      timeoutMs: 20_000,
+    });
+    assert.equal(loopback.stdout.trim(), "200", `a server on the sandbox's own loopback bypasses the proxy: ${loopback.stderr}`);
     const pip = await service.exec(box.id, { cmd: ["pip", "download", "--no-deps", "-q", "-d", "/tmp/dl", "six"], timeoutMs: 120_000 });
     assert.equal(pip.exitCode, 0, pip.stderr);
     const toHost = await service.exec(box.id, { cmd: ["python", "-c", "import socket\nsocket.create_connection(('172.17.0.1', 7788), timeout=3)"] });
