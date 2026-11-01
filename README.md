@@ -24,10 +24,10 @@ docker run --rm --runtime=runsc alpine uname -a   # kernel line ends in -gvisor:
 ## Run
 
 ```bash
-npx agentsandbox serve     # listens on http://127.0.0.1:7788, pulls python:3.12-slim on first run; Ctrl+C stops it
+npx agentboxes serve     # listens on http://127.0.0.1:7788, pulls python:3.12-slim on first run; Ctrl+C stops it
 ```
 
-`agentsandbox` is one npm package: `agentbox serve` is the server, `agentbox mcp` the MCP server for Claude Code and Cursor, `agentbox template build|list` the template tool, and `import { Agentbox } from "agentsandbox"` the TypeScript client with its types. Install it once with `npm install -g agentsandbox`, or run it through `npx`. The package is published by the release workflow on each `v*` tag; from a clone, `npm install` then `npm start` runs the same server from source.
+`agentboxes` is one npm package: `agentbox serve` is the server, `agentbox mcp` the MCP server for Claude Code and Cursor, `agentbox template build|list` the template tool, and `import { Agentbox } from "agentboxes"` the TypeScript client with its types. Install it once with `npm install -g agentboxes`, or run it through `npx`. The package is published by the release workflow on each `v*` tag; from a clone, `npm install` then `npm start` runs the same server from source.
 
 The server listens on loopback and needs no auth until you say otherwise. To serve other machines, set a key and the interface; a non-loopback `HOST` without a key is refused at startup. With a key, every route except `/health` needs `Authorization: Bearer <key>`:
 
@@ -131,7 +131,7 @@ The value of `OPENAI_API_KEY` is read from the server's environment and given on
 
 ## TypeScript SDK
 
-The client has no dependencies and needs Node 20+. From npm: `npm install agentsandbox`, then `import { Agentbox } from "agentsandbox"`, types included. From a clone, import `../sdk/src/index.js` as `examples/sdk-basic.ts` does; a one-off script outside the repo should be an `.mts` file, or tsx treats it as CommonJS and refuses top-level `await`.
+The client has no dependencies and needs Node 20+. From npm: `npm install agentboxes`, then `import { Agentbox } from "agentboxes"`, types included. From a clone, import `../sdk/src/index.js` as `examples/sdk-basic.ts` does; a one-off script outside the repo should be an `.mts` file, or tsx treats it as CommonJS and refuses top-level `await`.
 
 ```ts
 import { Agentbox, ExecTimeout } from "../sdk/src/index.js";
@@ -164,7 +164,7 @@ Errors are typed: `SandboxNotFound` (404), `PoolExhausted` (the server's live sa
 Claude Code:
 
 ```bash
-claude mcp add agentbox -e AGENTBOX_URL=http://127.0.0.1:7788 -- npx -y agentsandbox mcp
+claude mcp add agentbox -e AGENTBOX_URL=http://127.0.0.1:7788 -- npx -y agentboxes mcp
 ```
 
 From a clone, the command is `npx tsx /path/to/agentbox/mcp/server.ts` instead.
@@ -176,7 +176,7 @@ Cursor (`.cursor/mcp.json`) or a project `.mcp.json` for Claude Code:
   "mcpServers": {
     "agentbox": {
       "command": "npx",
-      "args": ["-y", "agentsandbox", "mcp"],
+      "args": ["-y", "agentboxes", "mcp"],
       "env": { "AGENTBOX_URL": "http://127.0.0.1:7788" }
     }
   }
@@ -187,7 +187,7 @@ Environment for the MCP server: `AGENTBOX_URL`, `AGENTBOX_API_KEY`, `AGENTBOX_TE
 
 ## Python SDK
 
-`sdk-python/` is the same client for Python 3.9+, standard library only: `pip install agentsandbox` (the import stays `agentbox`), or `pip install -e sdk-python` from a clone. Same methods in snake case, line-based `exec_stream`, `upload_directory` and `download_directory` through Python's `tarfile`, and the same typed errors. `npm run test:python` runs its tests against the HTTP app with the fake runtime, no Docker needed.
+`sdk-python/` is the same client for Python 3.9+, standard library only: `pip install agentboxes` (the import stays `agentbox`), or `pip install -e sdk-python` from a clone. Same methods in snake case, line-based `exec_stream`, `upload_directory` and `download_directory` through Python's `tarfile`, and the same typed errors. `npm run test:python` runs its tests against the HTTP app with the fake runtime, no Docker needed.
 
 ```python
 from agentbox import Agentbox

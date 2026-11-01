@@ -1,5 +1,5 @@
 {
-  "name": "agentsandbox",
+  "name": "agentboxes",
   "version": "0.2.0",
   "description": "A self-hosted sandbox server for AI agents: gVisor isolation, a warm pool, a network allowlist and secrets that never enter the sandbox, with a TypeScript SDK and an MCP server",
   "keywords": [

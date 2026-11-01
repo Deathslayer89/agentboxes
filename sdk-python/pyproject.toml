@@ -1,5 +1,5 @@
 [project]
-name = "agentsandbox"
+name = "agentboxes"
 version = "0.2.0"
 description = "Python client for an agentbox server: sandboxes for AI agents on your own Linux box"
 readme = "README.md"
