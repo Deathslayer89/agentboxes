@@ -8,8 +8,7 @@ Docs
 test
 examples
 bench
-mcp
-sdk
 sdk-python
 firecracker
+templates
 *.md

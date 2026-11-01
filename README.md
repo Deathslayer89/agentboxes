@@ -24,9 +24,10 @@ docker run --rm --runtime=runsc alpine uname -a   # kernel line ends in -gvisor:
 ## Run
 
 ```bash
-npm install
-npm start          # listens on http://127.0.0.1:7788, pulls python:3.12-slim on first run; Ctrl+C stops it
+npx agentsandbox serve     # listens on http://127.0.0.1:7788, pulls python:3.12-slim on first run; Ctrl+C stops it
 ```
+
+`agentsandbox` is one npm package: `agentbox serve` is the server, `agentbox mcp` the MCP server for Claude Code and Cursor, `agentbox template build|list` the template tool, and `import { Agentbox } from "agentsandbox"` the TypeScript client with its types. Install it once with `npm install -g agentsandbox`, or run it through `npx`. The package is published by the release workflow on each `v*` tag; from a clone, `npm install` then `npm start` runs the same server from source.
 
 The server listens on loopback and needs no auth until you say otherwise. To serve other machines, set a key and the interface; a non-loopback `HOST` without a key is refused at startup. With a key, every route except `/health` needs `Authorization: Bearer <key>`:
 
@@ -130,7 +131,7 @@ The value of `OPENAI_API_KEY` is read from the server's environment and given on
 
 ## TypeScript SDK
 
-The client in `sdk/` has no dependencies and needs Node 20+. It is not on npm yet, so import it from the repo as `examples/sdk-basic.ts` does (`../sdk/src/index.js`), or build it with `npm run build:sdk`; once published the import will be `from "agentbox"`. A one-off script outside the repo should be an `.mts` file, or tsx treats it as CommonJS and refuses top-level `await`.
+The client has no dependencies and needs Node 20+. From npm: `npm install agentsandbox`, then `import { Agentbox } from "agentsandbox"`, types included. From a clone, import `../sdk/src/index.js` as `examples/sdk-basic.ts` does; a one-off script outside the repo should be an `.mts` file, or tsx treats it as CommonJS and refuses top-level `await`.
 
 ```ts
 import { Agentbox, ExecTimeout } from "../sdk/src/index.js";
@@ -163,8 +164,10 @@ Errors are typed: `SandboxNotFound` (404), `PoolExhausted` (the server's live sa
 Claude Code:
 
 ```bash
-claude mcp add agentbox -e AGENTBOX_URL=http://127.0.0.1:7788 -- npx tsx /path/to/agentbox/mcp/server.ts
+claude mcp add agentbox -e AGENTBOX_URL=http://127.0.0.1:7788 -- npx -y agentsandbox mcp
 ```
+
+From a clone, the command is `npx tsx /path/to/agentbox/mcp/server.ts` instead.
 
 Cursor (`.cursor/mcp.json`) or a project `.mcp.json` for Claude Code:
 
@@ -173,7 +176,7 @@ Cursor (`.cursor/mcp.json`) or a project `.mcp.json` for Claude Code:
   "mcpServers": {
     "agentbox": {
       "command": "npx",
-      "args": ["tsx", "/path/to/agentbox/mcp/server.ts"],
+      "args": ["-y", "agentsandbox", "mcp"],
       "env": { "AGENTBOX_URL": "http://127.0.0.1:7788" }
     }
   }
@@ -184,7 +187,7 @@ Environment for the MCP server: `AGENTBOX_URL`, `AGENTBOX_API_KEY`, `AGENTBOX_TE
 
 ## Python SDK
 
-`sdk-python/` is the same client for Python 3.9+, standard library only, not on PyPI yet (`pip install -e sdk-python`). Same methods in snake case, line-based `exec_stream`, `upload_directory` and `download_directory` through Python's `tarfile`, and the same typed errors. `npm run test:python` runs its tests against the HTTP app with the fake runtime, no Docker needed.
+`sdk-python/` is the same client for Python 3.9+, standard library only: `pip install agentsandbox` (the import stays `agentbox`), or `pip install -e sdk-python` from a clone. Same methods in snake case, line-based `exec_stream`, `upload_directory` and `download_directory` through Python's `tarfile`, and the same typed errors. `npm run test:python` runs its tests against the HTTP app with the fake runtime, no Docker needed.
 
 ```python
 from agentbox import Agentbox
@@ -325,6 +328,7 @@ npm test                  # unit tests under test/unit, no Docker needed
 npm run test:integration  # test/integration: needs Docker, runsc and internet; checks each isolation default from inside a sandbox
 npm run test:firecracker  # needs ./firecracker/setup.sh and /dev/kvm; skipped otherwise
 npm run test:python       # the Python client against the fake server
+npm run build             # compiles dist/ for the package; npm pack runs it on its own
 ```
 
 `.github/workflows/ci.yml` runs the unit suite on Node 20 and 22, the Python tests, the integration suite on a runner with gVisor installed, and the image build. Tests live in `test/unit/<area>/` mirroring `src/`, plus `test/unit/proxy` and `test/unit/sdk`, and in `test/integration/`. Do not run the integration tests while a server is running on the same Docker: both own the proxy container and the reaper would remove each other's containers. Like the server, the suite leaves the `agentbox-egress-proxy` container running for the next start to reuse.
@@ -338,6 +342,8 @@ src/runtime/       SandboxRuntime interface, the gVisor-on-Docker implementation
 src/services/      SandboxService (create, exec, files, destroy, reap) and the warm pools
 src/http/          routes, auth, request parsing and the status page
 src/cli.ts         `agentbox template build | list`
+bin/agentbox.js    the package's command: serve, mcp, template
+scripts/build.mjs  compiles dist/ and copies the proxy source and the status page into it
 proxy/             the egress proxy (plain Node, no dependencies) and its Dockerfile
 firecracker/       setup script and the guest agent for the Firecracker runtime
 sdk/               the TypeScript client

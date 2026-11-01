@@ -78,7 +78,7 @@ async function guarded(work: () => Promise<ToolResult>): Promise<ToolResult> {
   }
 }
 
-const server = new McpServer({ name: "agentbox", version: "0.1.0" });
+const server = new McpServer({ name: "agentbox", version: "0.2.0" });
 
 server.registerTool(
   "run_code",

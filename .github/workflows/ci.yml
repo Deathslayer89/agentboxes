@@ -19,6 +19,9 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run test:python
+      - run: npm run build
+      - run: node bin/agentbox.js help
+      - run: npm pack --dry-run
   integration:
     runs-on: ubuntu-24.04
     steps:

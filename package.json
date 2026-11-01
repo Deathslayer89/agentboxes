@@ -1,9 +1,46 @@
 {
-  "name": "agentbox",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Self-hosted sandboxes for AI agents: gVisor isolation on any Linux box, no KVM needed",
+  "name": "agentsandbox",
+  "version": "0.2.0",
+  "description": "A self-hosted sandbox server for AI agents: gVisor isolation, a warm pool, a network allowlist and secrets that never enter the sandbox, with a TypeScript SDK and an MCP server",
+  "keywords": [
+    "sandbox",
+    "gvisor",
+    "ai-agents",
+    "mcp",
+    "code-execution",
+    "firecracker"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Deathslayer89/agentbox.git"
+  },
+  "homepage": "https://github.com/Deathslayer89/agentbox#readme",
+  "bugs": {
+    "url": "https://github.com/Deathslayer89/agentbox/issues"
+  },
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "agentbox": "bin/agentbox.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/sdk/src/index.d.ts",
+      "default": "./dist/sdk/src/index.js"
+    }
+  },
+  "types": "./dist/sdk/src/index.d.ts",
+  "files": [
+    "bin",
+    "dist",
+    "firecracker",
+    "templates",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "node --import tsx src/main.ts",
     "stop": "kill $(cat data/agentbox.pid)",
@@ -13,13 +50,13 @@
     "example": "tsx examples/sdk-basic.ts",
     "mcp": "tsx mcp/server.ts",
     "bench": "tsx bench/run.ts",
-    "build:sdk": "tsc -p sdk/tsconfig.json",
     "test": "tsx --test test/unit/*/*.test.ts",
     "test:integration": "tsx --test test/integration/sandbox.test.ts",
     "test:python": "python3 -m unittest discover -s sdk-python/tests -v",
-    "test:firecracker": "tsx --test test/integration/firecracker.test.ts"
+    "test:firecracker": "tsx --test test/integration/firecracker.test.ts",
+    "build": "node scripts/build.mjs",
+    "prepack": "npm run build"
   },
-  "license": "MIT",
   "dependencies": {
     "@hono/node-server": "^2.1.5",
     "@modelcontextprotocol/sdk": "^1.32.2",
@@ -28,13 +65,14 @@
     "hono": "^4.13.14",
     "pino": "^10.4.0",
     "pino-pretty": "^13.2.0",
-    "tsx": "^4.23.15",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
     "@types/dockerode": "^4.0.2",
     "@types/node": "^20.19.43",
+    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
-  }
+  },
+  "private": true
 }
