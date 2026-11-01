@@ -2,8 +2,11 @@ name: publish
 on:
   push:
     tags: ["v*"]
+# The npm and PyPI jobs run only once the repository variable TRUSTED_PUBLISHING is "true", which is set after
+# the trusted publishers exist on npmjs.com and pypi.org. Until then, publish to npm by hand with `npm publish`.
 jobs:
   npm:
+    if: vars.TRUSTED_PUBLISHING == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -22,6 +25,7 @@ jobs:
       # Add --provenance back once the repository is public; npm only attests packages built from public source.
       - run: npm publish --access public
   pypi:
+    if: vars.TRUSTED_PUBLISHING == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
