@@ -43,14 +43,25 @@ type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: bo
 const text = (value: string, isError = false): ToolResult => ({ content: [{ type: "text", text: value }], ...(isError ? { isError } : {}) });
 
 function describe(result: ExecResult): string {
-  const notes = [result.timedOut ? `killed at the ${result.durationMs} ms deadline` : "", result.truncated ? "output truncated" : ""].filter(Boolean);
+  const notes = [`${(result.durationMs / 1000).toFixed(1)} s`, result.timedOut ? "killed at the deadline" : "", result.truncated ? "output truncated" : ""].filter(Boolean);
   return [
-    `exit code: ${result.exitCode}${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`,
+    `exit code: ${result.exitCode} (${notes.join(", ")})`,
     "stdout:",
     result.stdout || "(empty)",
     "stderr:",
     result.stderr || "(empty)",
   ].join("\n");
+}
+
+// Inside a sandbox every network failure looks like broken DNS, so a failed command gets told what it may reach.
+const NETWORK_ERROR = /name resolution|Network is unreachable|ENOTFOUND|EAI_AGAIN|ENETUNREACH|getaddrinfo|Could not resolve host|CONNECT tunnel failed|403 Forbidden/i;
+
+async function networkNote(box: Sandbox, result: ExecResult): Promise<string> {
+  if (result.exitCode === 0 || !NETWORK_ERROR.test(result.stdout + result.stderr)) return "";
+  const hosts = createOptions.allowHosts;
+  if (hosts === undefined) return "\nnote: this sandbox has no network. Start the MCP server with AGENTBOX_ALLOW_HOSTS=host1,host2 to allow hosts.";
+  const denied = (await box.egressLog().catch(() => ({ denied: [] }))).denied.slice(-5).map((d) => `${d.host}:${d.port} (${d.reason})`);
+  return `\nnote: this sandbox reaches only ${hosts.join(", ")}.${denied.length > 0 ? ` The proxy refused: ${denied.join("; ")}.` : ""}`;
 }
 
 // Turns SDK errors into tool errors the model can read instead of crashing the server.
@@ -86,7 +97,7 @@ server.registerTool(
       if (result.exitCode === 127 && language === "javascript") {
         return text(`${describe(result)}\nnode is not in this sandbox's image. Start the MCP server with AGENTBOX_TEMPLATE=node after building that template.`, true);
       }
-      return text(describe(result));
+      return text(describe(result) + (await networkNote(box, result)));
     }),
 );
 
@@ -94,7 +105,7 @@ server.registerTool(
   "run_command",
   {
     title: "Run a command in the sandbox",
-    description: "Runs a program with arguments in /workspace, for example [\"pip\", \"install\", \"requests\"] or [\"ls\", \"-la\"]. Returns exit code, stdout and stderr.",
+    description: "Runs a program with arguments in /workspace, for example [\"pip\", \"install\", \"requests\"] or [\"ls\", \"-la\"]. Returns exit code, stdout and stderr. The sandbox has no network unless the server was started with AGENTBOX_ALLOW_HOSTS.",
     inputSchema: {
       cmd: z.array(z.string()).min(1),
       cwd: z.string().optional().describe("Directory under /workspace to run in; relative paths start at /workspace"),
@@ -102,7 +113,11 @@ server.registerTool(
     },
   },
   ({ cmd, cwd, timeoutMs }) =>
-    guarded(async () => text(describe(await (await sandbox()).exec(cmd, { ...(cwd === undefined ? {} : { cwd }), ...(timeoutMs === undefined ? {} : { timeoutMs }) })))),
+    guarded(async () => {
+      const box = await sandbox();
+      const result = await box.exec(cmd, { ...(cwd === undefined ? {} : { cwd }), ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+      return text(describe(result) + (await networkNote(box, result)));
+    }),
 );
 
 server.registerTool(

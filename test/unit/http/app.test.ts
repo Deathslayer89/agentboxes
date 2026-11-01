@@ -156,6 +156,15 @@ test("PUT and GET archive carry tar bytes; the path defaults to /workspace", asy
   assert.equal((await app.request(`/sandboxes/${id}/archive?path=../`, { method: "PUT", body: "x" })).status, 400);
 });
 
+test("the request log gets one line per request, except health probes", async () => {
+  const lines: string[] = [];
+  const { app } = makeApp({ apiKeys: [{ name: "team", key: "k1" }], log: (line) => lines.push(line) });
+  await app.request("/health");
+  await app.request("/sandboxes", { method: "POST", headers: { authorization: "Bearer k1" }, body: "{}" });
+  await app.request("/sandboxes", { headers: { authorization: "Bearer wrong" } });
+  assert.deepEqual(lines.map((line) => line.replace(/\d+ ms/, "N ms")), ["POST /sandboxes 201 N ms team", "GET /sandboxes 401 N ms -"]);
+});
+
 test("POST /sandboxes/:id/extend returns the record with a later expiry", async () => {
   const { app } = makeApp();
   const created = (await (await app.request("/sandboxes", { method: "POST", body: "{}" })).json()) as { id: string; expiresAt: string };

@@ -39,6 +39,8 @@ async function jsonBody(c: Context): Promise<unknown> {
 export interface AppOptions {
   // When non-empty, every route except /health needs `Authorization: Bearer <key>` for one of these.
   apiKeys?: ApiKey[];
+  // Receives one line per request, except /health. Unset means no request log.
+  log?: (line: string) => void;
 }
 
 export function createApp(service: SandboxService, options: AppOptions = {}): Hono<{ Variables: { owner: string } }> {
@@ -54,6 +56,17 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
     console.error(err);
     return c.json({ error: "InternalError", message: "unexpected server error" }, 500);
   });
+
+  // Method, path, status, time to the response (for a stream, to its first byte), and the caller when auth is on.
+  const log = options.log;
+  if (log !== undefined) {
+    app.use(async (c, next) => {
+      if (c.req.path === "/health") return next();
+      const startedAt = performance.now();
+      await next();
+      log(`${c.req.method} ${c.req.path} ${c.res.status} ${Math.round(performance.now() - startedAt)} ms${keys.length > 0 ? ` ${c.get("owner") ?? "-"}` : ""}`);
+    });
+  }
 
   // Open so load balancers and uptime checks can probe without the key.
   app.get("/health", (c) => c.json({ ok: true }));

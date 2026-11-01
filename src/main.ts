@@ -89,7 +89,7 @@ const pidFile = join(dirname(config.dbPath), "agentbox.pid");
 mkdirSync(dirname(pidFile), { recursive: true });
 writeFileSync(pidFile, `${process.pid}\n`);
 
-const server = serve({ fetch: createApp(service, { apiKeys: config.apiKeys }).fetch, hostname: config.host, port: config.port }, (info) => {
+const server = serve({ fetch: createApp(service, { apiKeys: config.apiKeys, log: console.log }).fetch, hostname: config.host, port: config.port }, (info) => {
   console.log(`agentbox listening on http://${info.address}:${info.port} (image ${config.image}, runtime ${runtime.runtimeName})`);
 });
 

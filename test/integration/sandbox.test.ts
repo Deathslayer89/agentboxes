@@ -75,10 +75,13 @@ test("S2: no network", async () => {
   assert.notEqual(r.exitCode, 0);
 });
 
-test("S4: root is read-only, /workspace and /tmp are writable", async () => {
+test("S4: root is read-only, /workspace and /tmp are writable, and a script there can be executed", async () => {
   assert.notEqual((await run(["touch", "/etc/x"])).exitCode, 0);
   assert.equal((await run(["sh", "-c", "echo hi > /workspace/a.txt && cat /workspace/a.txt"])).stdout.trim(), "hi");
   assert.equal((await run(["sh", "-c", "echo hi > /tmp/a.txt && cat /tmp/a.txt"])).stdout.trim(), "hi");
+  // Docker mounts tmpfs noexec by default, which would break every script npm or pip installs.
+  const script = await run(["sh", "-c", "printf '#!/bin/sh\\necho ran\\n' > /workspace/t.sh && chmod +x /workspace/t.sh && /workspace/t.sh && cp /workspace/t.sh /tmp/t.sh && /tmp/t.sh"]);
+  assert.equal(script.stdout, "ran\nran\n", script.stderr);
 });
 
 test("S5: not root, and no capabilities", async () => {

@@ -28,7 +28,7 @@ npm install
 npm start          # listens on http://127.0.0.1:7788, pulls python:3.12-slim on first run; Ctrl+C stops it
 ```
 
-The server listens on loopback and needs no auth until you say otherwise. To serve other machines, set a key and the interface; a non-loopback `HOST` without a key is refused at startup. With a key, every route except `/health` needs `Authorization: Bearer <key>`:
+The server prints one line per request (method, path, status, time, and the key's name when auth is on), except health probes. The server listens on loopback and needs no auth until you say otherwise. To serve other machines, set a key and the interface; a non-loopback `HOST` without a key is refused at startup. With a key, every route except `/health` needs `Authorization: Bearer <key>`:
 
 ```bash
 AGENTBOX_API_KEY=$(openssl rand -hex 16) HOST=0.0.0.0 npm start
@@ -120,7 +120,7 @@ The value of `OPENAI_API_KEY` is read from the server's environment and given on
 
 ## TypeScript SDK
 
-The client in `sdk/` has no dependencies and needs Node 20+. It is not on npm yet, so import it from the repo as `examples/sdk-basic.ts` does (`../sdk/src/index.js`), or build it with `npm run build:sdk`; once published the import will be `from "agentbox"`.
+The client in `sdk/` has no dependencies and needs Node 20+. It is not on npm yet, so import it from the repo as `examples/sdk-basic.ts` does (`../sdk/src/index.js`), or build it with `npm run build:sdk`; once published the import will be `from "agentbox"`. A one-off script outside the repo should be an `.mts` file, or tsx treats it as CommonJS and refuses top-level `await`.
 
 ```ts
 import { Agentbox, ExecTimeout } from "../sdk/src/index.js";
@@ -220,7 +220,7 @@ curl -s localhost:7788/templates
 curl -s -X POST localhost:7788/sandboxes -d '{"template":"data-science"}'
 ```
 
-`templates/node/Dockerfile` is a ready-made template with Node 22, npm and git for TypeScript work: `npm run agentbox -- template build node templates/node/Dockerfile`, then `create({ template: "node" })`.
+`templates/node/Dockerfile` is a ready-made template with Node 22, npm and git for TypeScript work: `npm run agentbox -- template build node templates/node/Dockerfile`, then `create({ template: "node" })`. An `npm ci` inside it needs `allowHosts: ["registry.npmjs.org", "github.com", "objects.githubusercontent.com"]`, the last two for the prebuilt binaries of native modules; the egress log names any host still missing.
 
 Sandboxes still run as user 65534 with a read-only root, so anything the Dockerfile installs must be world-readable, which `pip install` as root already is. To keep a template instant, give it a pool: `POOL_SIZES=default:3,data-science:2`. The server refuses to start if `POOL_SIZES` names a template that has not been built.
 
@@ -237,7 +237,7 @@ Installing packages at run time needs the network allowlist above, for example `
 | `/workspace` tmpfs | 1024 MB, memory-backed; the sandbox's hard memory cap is memory plus disk | `DEFAULT_DISK_MB`, `MAX_DISK_MB` |
 | Pids | 256 | `DEFAULT_PIDS`, `MAX_PIDS` |
 | TTL | 600 s | `DEFAULT_TTL_SECONDS`, `MAX_TTL_SECONDS` |
-| Exec timeout | 30 s | `DEFAULT_EXEC_TIMEOUT_MS`, `MAX_EXEC_TIMEOUT_MS` |
+| Exec timeout | 30 s, at most 30 min per command | `DEFAULT_EXEC_TIMEOUT_MS`, `MAX_EXEC_TIMEOUT_MS` |
 | Root filesystem | read-only | |
 | User | `nobody` (65534), `--cap-drop=ALL`, `no-new-privileges` | |
 | Host mounts, docker socket, host env | none | |

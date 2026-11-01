@@ -140,9 +140,10 @@ export class GvisorDockerRuntime implements SandboxRuntime {
         PidsLimit: limits.pids,
         ReadonlyRootfs: true, // S4: read-only root ...
         Tmpfs: {
-          // ... plus size-limited writable tmpfs for the workspace and /tmp
-          [WORKSPACE]: `rw,size=${limits.diskMb}m,uid=${SANDBOX_UID},gid=${SANDBOX_UID},mode=0755`,
-          "/tmp": "rw,size=256m,mode=1777",
+          // ... plus size-limited writable tmpfs for the workspace and /tmp. Docker mounts tmpfs noexec unless told
+          // otherwise, which breaks every installed script; noexec adds nothing here since an interpreter runs the file anyway.
+          [WORKSPACE]: `rw,exec,size=${limits.diskMb}m,uid=${SANDBOX_UID},gid=${SANDBOX_UID},mode=0755`,
+          "/tmp": "rw,exec,size=256m,mode=1777",
         },
         CapDrop: ["ALL"], // S5: no capabilities, no privilege escalation
         SecurityOpt: ["no-new-privileges"],

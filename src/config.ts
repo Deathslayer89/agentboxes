@@ -70,7 +70,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       ttlSeconds: num("MAX_TTL_SECONDS", 3600),
     },
     defaultExecTimeoutMs: num("DEFAULT_EXEC_TIMEOUT_MS", 30_000),
-    maxExecTimeoutMs: num("MAX_EXEC_TIMEOUT_MS", 300_000),
+    maxExecTimeoutMs: num("MAX_EXEC_TIMEOUT_MS", 1_800_000),
     maxOutputBytes: num("MAX_OUTPUT_BYTES", 1_048_576),
     maxFileBytes: num("MAX_FILE_BYTES", 8 * 1_048_576),
     maxArchiveBytes: num("MAX_ARCHIVE_BYTES", 256 * 1_048_576),

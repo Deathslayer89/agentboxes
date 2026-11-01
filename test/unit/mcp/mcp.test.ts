@@ -64,7 +64,7 @@ test("the five tools are listed", async () => {
 
 test("run_code writes the file and runs it in one sandbox that is reused across calls", async () => {
   const first = await client.callTool({ name: "run_code", arguments: { language: "python", code: "print(2+2)" } });
-  assert.match(textOf(first), /exit code: 0\nstdout:\npython main.py/);
+  assert.match(textOf(first), /exit code: 0 \(0\.0 s\)\nstdout:\npython main.py/);
   assert.equal(service.list().length, 1);
   assert.equal(service.list()[0]?.limits.ttlSeconds, 120);
   const [container] = runtime.containers.values();
@@ -73,6 +73,39 @@ test("run_code writes the file and runs it in one sandbox that is reused across 
   const second = await client.callTool({ name: "run_command", arguments: { cmd: ["ls", "-la"] } });
   assert.match(textOf(second), /stdout:\nls -la/);
   assert.equal(service.list().length, 1, "the same sandbox served both calls");
+});
+
+test("a failed command that looks like a network error says what the sandbox may reach", async () => {
+  runtime.nextExecResult = { exitCode: 1, stderr: "pip: Temporary failure in name resolution" };
+  const noNetwork = await client.callTool({ name: "run_command", arguments: { cmd: ["pip", "install", "x"] } });
+  assert.match(textOf(noNetwork), /note: this sandbox has no network\. Start the MCP server with AGENTBOX_ALLOW_HOSTS/);
+  runtime.nextExecResult = { exitCode: 1, stderr: "ordinary failure" };
+  assert.doesNotMatch(textOf(await client.callTool({ name: "run_command", arguments: { cmd: ["false"] } })), /note:/);
+
+  // A second MCP server with an allowlist reports the proxy's refusals from the egress log.
+  const root = resolve(import.meta.dirname, "../../..");
+  const port = (server.address() as { port: number }).port;
+  const allowed = new Client({ name: "test-allowed", version: "0.0.0" });
+  await allowed.connect(
+    new StdioClientTransport({
+      command: resolve(root, "node_modules/.bin/tsx"),
+      args: [resolve(root, "mcp/server.ts")],
+      env: { ...process.env, AGENTBOX_URL: `http://127.0.0.1:${port}`, AGENTBOX_API_KEY: "k1", AGENTBOX_ALLOW_HOSTS: "pypi.org" } as Record<string, string>,
+      cwd: root,
+      stderr: "pipe",
+    }),
+  );
+  try {
+    await allowed.callTool({ name: "run_command", arguments: { cmd: ["true"] } });
+    const box = service.list().find((s) => s.network !== undefined);
+    assert.ok(box !== undefined, "the allowlisted session created a networked sandbox");
+    runtime.deniedLogs.set(box.id, [{ at: "now", method: "CONNECT", host: "example.com", port: 443, reason: "host not in allowHosts" }]);
+    runtime.nextExecResult = { exitCode: 7, stderr: "curl: (6) Could not resolve host: example.com" };
+    const refused = await allowed.callTool({ name: "run_command", arguments: { cmd: ["curl", "https://example.com"] } });
+    assert.match(textOf(refused), /note: this sandbox reaches only pypi\.org\. The proxy refused: example\.com:443 \(host not in allowHosts\)\./);
+  } finally {
+    await allowed.close();
+  }
 });
 
 test("write_file and read_file round trip; a bad path is a tool error, not a crash", async () => {
@@ -84,17 +117,22 @@ test("write_file and read_file round trip; a bad path is a tool error, not a cra
 });
 
 test("after the sandbox is gone, the next call gets a new one; reset_sandbox forces that", async () => {
-  await service.destroy("sbx_1");
+  const live = () => service.list().filter((s) => s.status === "ready").map((s) => s.id);
+  const [first] = live();
+  assert.ok(first !== undefined);
+  await service.destroy(first);
   await client.callTool({ name: "run_command", arguments: { cmd: ["true"] } });
-  assert.equal(service.list().filter((s) => s.status === "ready").map((s) => s.id).join(), "sbx_2");
-  assert.match(textOf(await client.callTool({ name: "reset_sandbox", arguments: {} })), /destroyed sandbox sbx_2/);
+  const [second] = live();
+  assert.ok(second !== undefined && second !== first && live().length === 1, "one fresh sandbox replaced the destroyed one");
+  assert.match(textOf(await client.callTool({ name: "reset_sandbox", arguments: {} })), new RegExp(`destroyed sandbox ${second}`));
   await client.callTool({ name: "run_command", arguments: { cmd: ["true"] } });
-  assert.equal(service.list().filter((s) => s.status === "ready").map((s) => s.id).join(), "sbx_3");
+  const [third] = live();
+  assert.ok(third !== undefined && third !== second && live().length === 1, "reset gave a fresh sandbox on the next call");
 });
 
 test("a timed out command comes back as a tool error with the partial output", async () => {
   runtime.nextExecResult = { timedOut: true, exitCode: 137, stdout: "partial", durationMs: 500 };
   const result = await client.callTool({ name: "run_command", arguments: { cmd: ["sleep", "99"] } });
   assert.equal(result.isError, true);
-  assert.match(textOf(result), /killed at the 500 ms deadline[\s\S]*partial/);
+  assert.match(textOf(result), /exit code: 137 \(0\.5 s, killed at the deadline\)[\s\S]*partial/);
 });
