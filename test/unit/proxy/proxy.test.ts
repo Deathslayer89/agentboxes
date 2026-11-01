@@ -6,6 +6,7 @@ import type net from "node:net";
 import tls from "node:tls";
 import test, { after, before } from "node:test";
 import { createCa, issueCert } from "../../../proxy/certs.mjs";
+import { inSubnet } from "../../../proxy/policy.mjs";
 import { startProxy } from "../../../proxy/server.mjs";
 
 // The proxy on loopback with allowPrivateTargets, so a local echo server can stand in for the internet.
@@ -124,6 +125,20 @@ test("a bare rule allows ports 80 and 443 only; \"host:port\" allows that one po
   assert.deepEqual(log.denied.map((entry) => entry.reason), [`port ${upstreamPort} not allowed for 127.0.0.1`]);
   await control(proxy, "PUT", "/policies/sbx_ports", { token: "tok", allowHosts: [`127.0.0.1:${upstreamPort}`] });
   assert.equal((await viaProxy(proxy, `http://127.0.0.1:${upstreamPort}/`, { "proxy-authorization": basic("sbx_ports", "tok") })).status, 200);
+});
+
+test("a token works only from its sandbox's subnet; use from elsewhere is refused and logged", async () => {
+  assert.equal(inSubnet("::ffff:172.19.0.2", "172.19.0.0/16"), true);
+  assert.equal(inSubnet("172.19.255.9", "172.19.0.0/16"), true);
+  assert.equal(inSubnet("172.20.0.2", "172.19.0.0/16"), false);
+  assert.equal(inSubnet("fe80::1", "172.19.0.0/16"), false);
+  assert.equal(inSubnet("172.19.0.2", "not a subnet"), false);
+  await control(proxy, "PUT", "/policies/sbx_far", { token: "tok", subnet: "10.0.0.0/8", allowHosts: [`127.0.0.1:${upstreamPort}`] });
+  assert.equal((await viaProxy(proxy, `http://127.0.0.1:${upstreamPort}/`, { "proxy-authorization": basic("sbx_far", "tok") })).status, 407);
+  const log = (await (await control(proxy, "GET", "/policies/sbx_far/log")).json()) as { denied: Array<{ reason: string }> };
+  assert.match(log.denied[0]?.reason ?? "", /^token used from (::ffff:)?127\.0\.0\.1, outside 10\.0\.0\.0\/8$/);
+  await control(proxy, "PUT", "/policies/sbx_near", { token: "tok", subnet: "127.0.0.0/8", allowHosts: [`127.0.0.1:${upstreamPort}`] });
+  assert.equal((await viaProxy(proxy, `http://127.0.0.1:${upstreamPort}/`, { "proxy-authorization": basic("sbx_near", "tok") })).status, 200);
 });
 
 test("CONNECT to an allowed host without a secret is a blind tunnel", async () => {

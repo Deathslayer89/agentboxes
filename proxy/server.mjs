@@ -5,7 +5,7 @@ import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 import { createCa, issueCert } from "./certs.mjs";
-import { isPublicAddress, parseProxyAuth, refusalFor, splitHostPort } from "./policy.mjs";
+import { inSubnet, isPublicAddress, parseProxyAuth, refusalFor, splitHostPort } from "./policy.mjs";
 
 // Denied attempts kept per sandbox; older entries are dropped.
 const MAX_DENIED = 1000;
@@ -25,7 +25,7 @@ const MAX_DENIED = 1000;
  * @param {{ adminToken: string, host?: string, controlHost?: string, proxyPort?: number, controlPort?: number, allowPrivateTargets?: boolean, upstreamCa?: string }} options
  */
 export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = host, proxyPort = 0, controlPort = 0, allowPrivateTargets = false, upstreamCa = undefined }) {
-  // sandboxId -> { token, allowHosts, secrets, denied }
+  // sandboxId -> { token, subnet, allowHosts, secrets, denied }
   const policies = new Map();
   const ca = await createCa();
   // host -> Promise<{ key, cert }>, so two concurrent requests for one host share one certificate
@@ -40,10 +40,16 @@ export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = h
     return pending;
   }
 
+  // The token must arrive from the sandbox's own network; a token used from anywhere else is refused and logged.
   function authenticate(req) {
     const auth = parseProxyAuth(req.headers["proxy-authorization"]);
     const policy = auth === undefined ? undefined : policies.get(auth.id);
     if (policy === undefined || !sameString(policy.token, auth.token)) return undefined;
+    const from = req.socket.remoteAddress ?? "";
+    if (policy.subnet !== undefined && !inSubnet(from, policy.subnet)) {
+      recordDenied(policy, { method: req.method, host: from, port: req.socket.remotePort ?? 0, reason: `token used from ${from}, outside ${policy.subnet}` });
+      return undefined;
+    }
     return policy;
   }
 
@@ -179,7 +185,13 @@ export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = h
     if (resource === "policies" && id !== undefined) {
       if (req.method === "PUT" && action === undefined) {
         const body = JSON.parse(await readBody(req));
-        policies.set(id, { token: body.token, allowHosts: body.allowHosts ?? [], secrets: normalizeSecrets(body.secrets ?? {}), denied: [] });
+        policies.set(id, {
+          token: body.token,
+          subnet: typeof body.subnet === "string" ? body.subnet : undefined,
+          allowHosts: body.allowHosts ?? [],
+          secrets: normalizeSecrets(body.secrets ?? {}),
+          denied: [],
+        });
         return json(200, { ok: true });
       }
       if (req.method === "DELETE" && action === undefined) {

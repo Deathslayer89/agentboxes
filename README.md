@@ -36,6 +36,17 @@ AGENTBOX_API_KEY=$(openssl rand -hex 16) HOST=0.0.0.0 npm start
 
 If you run the server in the background, `npm stop` sends SIGTERM to the server process using the pid file it writes next to its database (`data/agentbox.pid`). Killing only the npm wrapper in front of it leaves the server running.
 
+Or run the server as a container, with gVisor installed on the host as above:
+
+```bash
+docker build -t agentbox .
+docker run -d --name agentbox --network host -v /var/run/docker.sock:/var/run/docker.sock -v agentbox-data:/data agentbox
+curl -s localhost:7788/health
+docker stop agentbox      # SIGTERM: the pool is drained, sandboxes keep running for the next start
+```
+
+Host networking keeps the server on the host's loopback, so no key is needed; add `-e AGENTBOX_API_KEY=... -e HOST=0.0.0.0` to serve other machines. The Docker socket is how the server starts sandboxes, which makes the container root-equivalent on the host, the same as `npm start` under a user in the `docker` group. `/data` holds the SQLite file and the pid file. Templates are built the same way, with the Dockerfile's directory mounted in: `docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD/templates:/templates" agentbox node --import tsx src/cli.ts template build node /templates/node/Dockerfile`. The Firecracker runtime is not available inside the container. The `publish` workflow pushes this image to `ghcr.io/deathslayer89/agentbox` on every `v*` tag.
+
 More than one key, each with its own limits: `AGENTBOX_API_KEYS="team-a:<key>:5:4096,bot:<key>"` is `name:key[:maxSandboxes[:maxMemoryMb]]`, comma separated, on top of `AGENTBOX_API_KEY` (the key named `default`). A key only sees the sandboxes it created; another key's sandbox answers 404. `maxMemoryMb` caps the sum of `memoryMb` over the key's live sandboxes, and the server-wide `MAX_SANDBOXES` still applies to everyone.
 
 ```bash
@@ -91,7 +102,7 @@ curl -s localhost:7788/sandboxes/sbx_.../egress-log
 # {"allowHosts":["pypi.org","files.pythonhosted.org"],"denied":[{"at":"...","method":"CONNECT","host":"example.com","port":443,"reason":"host not in allowHosts"}]}
 ```
 
-How it works: such a sandbox gets its own internal Docker network with an isolated gateway (Docker 28+), so the only thing it can reach is the egress proxy container, not the internet and not the host. Inside, `HTTP_PROXY` and `HTTPS_PROXY` point at the proxy with a token that identifies the sandbox. The proxy lets allowlisted hosts through and refuses everything else with a 403, recording each refusal in the egress log. Hosts that resolve to loopback, link-local (the cloud metadata address `169.254.169.254`), private or multicast addresses are refused even when allowlisted. `*.example.com` in the allowlist matches subdomains. A bare host allows ports 80 and 443; `db.example.com:5432` allows one other port. The proxy's control API listens only on Docker's default bridge, which sandbox networks cannot reach.
+How it works: such a sandbox gets its own internal Docker network with an isolated gateway (Docker 28+), so the only thing it can reach is the egress proxy container, not the internet and not the host. Inside, `HTTP_PROXY` and `HTTPS_PROXY` point at the proxy with a token that identifies the sandbox. The proxy lets allowlisted hosts through and refuses everything else with a 403, recording each refusal in the egress log. Hosts that resolve to loopback, link-local (the cloud metadata address `169.254.169.254`), private or multicast addresses are refused even when allowlisted. `*.example.com` in the allowlist matches subdomains. A bare host allows ports 80 and 443; `db.example.com:5432` allows one other port. The proxy's control API listens only on Docker's default bridge, which sandbox networks cannot reach, and each sandbox's proxy token is bound to its own network's subnet, so a token that leaks (into a log, say) is refused from anywhere else and the refusal shows up in the egress log.
 
 pip, curl, git, npm, and Python's `urllib` and `requests` honour the proxy variables. Node's built-in `fetch` only does so with `NODE_USE_ENV_PROXY=1`, which the node template sets (verified on Node 22; undici prints an "experimental" warning). Installing packages at run time this way is the slow path; use a template for anything you need more than once.
 
@@ -306,7 +317,7 @@ npm run test:firecracker  # needs ./firecracker/setup.sh and /dev/kvm; skipped o
 npm run test:python       # the Python client against the fake server
 ```
 
-Tests live in `test/unit/<area>/` mirroring `src/`, plus `test/unit/proxy` and `test/unit/sdk`, and in `test/integration/`. Do not run the integration tests while a server is running on the same Docker: both own the proxy container and the reaper would remove each other's containers. Like the server, the suite leaves the `agentbox-egress-proxy` container running for the next start to reuse.
+`.github/workflows/ci.yml` runs the unit suite on Node 20 and 22, the Python tests, the integration suite on a runner with gVisor installed, and the image build. Tests live in `test/unit/<area>/` mirroring `src/`, plus `test/unit/proxy` and `test/unit/sdk`, and in `test/integration/`. Do not run the integration tests while a server is running on the same Docker: both own the proxy container and the reaper would remove each other's containers. Like the server, the suite leaves the `agentbox-egress-proxy` container running for the next start to reuse.
 
 ## Layout
 
@@ -324,4 +335,6 @@ sdk-python/        the Python client
 mcp/               the MCP server, built on the client
 examples/          the SDK walkthrough, the coding agent and the Mastra agent
 test/              unit tests by area, and integration tests against real gVisor
+Dockerfile         the server image: Node, the server source and the proxy source
+.github/workflows/ CI (unit, Python, integration with gVisor, image build) and the GHCR publish on tags
 ```

@@ -113,11 +113,13 @@ export class EgressProxyManager {
     });
     try {
       await network.connect({ Container: this.proxyId });
-      const info = (await network.inspect()) as { Containers: Record<string, { IPv4Address: string }> };
+      const info = (await network.inspect()) as { Containers: Record<string, { IPv4Address: string }>; IPAM: { Config: Array<{ Subnet: string }> } };
       const proxyIp = info.Containers[this.proxyId]?.IPv4Address.split("/")[0];
-      if (proxyIp === undefined) throw new Error("proxy has no address on the sandbox network");
+      const subnet = info.IPAM.Config[0]?.Subnet;
+      if (proxyIp === undefined || subnet === undefined) throw new Error("proxy has no address on the sandbox network");
+      // The token is bound to the network's subnet, so it is useless from anywhere but this sandbox.
       const token = randomBytes(16).toString("hex");
-      await this.control("PUT", `/policies/${sandboxId}`, { token, allowHosts: policy.allowHosts, secrets: policy.secrets });
+      await this.control("PUT", `/policies/${sandboxId}`, { token, subnet, allowHosts: policy.allowHosts, secrets: policy.secrets });
       const proxyUrl = `http://${sandboxId}:${token}@${proxyIp}:${PROXY_PORT}`;
       const env = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"].map((key) => `${key}=${proxyUrl}`);
       const hasSecrets = Object.keys(policy.secrets).length > 0;

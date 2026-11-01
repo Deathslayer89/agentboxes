@@ -17,6 +17,20 @@ export function refusalFor(host, port, allowHosts) {
   return nameMatched ? `port ${port} not allowed for ${host}` : "host not in allowHosts";
 }
 
+// True when an IPv4 address, plain or "::ffff:"-mapped, is inside "a.b.c.d/n". Anything else is outside.
+export function inSubnet(ip, cidr) {
+  const [base, bits] = cidr.split("/");
+  const prefix = Number(bits);
+  const address = ip.toLowerCase().startsWith("::ffff:") ? ip.slice(7) : ip;
+  if (isIP(address) !== 4 || isIP(base) !== 4 || !(prefix >= 0 && prefix <= 32)) return false;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return ((v4ToInt(address) & mask) >>> 0) === ((v4ToInt(base) & mask) >>> 0);
+}
+
+function v4ToInt(ip) {
+  return ip.split(".").reduce((n, part) => ((n << 8) + Number(part)) >>> 0, 0);
+}
+
 // "host:port" -> { host, port }; a bare host or an IPv6 literal has no port.
 function splitRule(rule) {
   const match = /^(.+):(\d{1,5})$/.exec(rule);

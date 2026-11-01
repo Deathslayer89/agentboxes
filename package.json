@@ -26,13 +26,13 @@
     "better-sqlite3": "^12.11.1",
     "dockerode": "^5.0.1",
     "hono": "^4.13.14",
+    "tsx": "^4.23.15",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
     "@types/dockerode": "^4.0.2",
     "@types/node": "^20.19.43",
-    "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }
 }
