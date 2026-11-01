@@ -19,7 +19,8 @@ jobs:
       - run: npm install -g npm@latest
       - run: npm ci
       - run: npm test
-      - run: npm publish --provenance --access public
+      # Add --provenance back once the repository is public; npm only attests packages built from public source.
+      - run: npm publish --access public
   pypi:
     runs-on: ubuntu-24.04
     permissions:
