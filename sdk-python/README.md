@@ -1,6 +1,6 @@
 # agentbox (Python client)
 
-Standard library only, Python 3.9+. Not on PyPI yet; install from the repo with `pip install -e sdk-python`.
+Standard library only, Python 3.9+. Install with `pip install agentboxes` (the import is `agentbox`), or from a clone with `pip install -e sdk-python`.
 
 ```python
 from agentbox import Agentbox, ExecTimeout
