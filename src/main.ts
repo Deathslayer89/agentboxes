@@ -1,6 +1,6 @@
 import { serve } from "@hono/node-server";
 import Docker from "dockerode";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { SystemClock } from "./clock.js";
 import { loadConfig } from "./config.js";
@@ -19,6 +19,35 @@ import { WarmPool, WarmPools } from "./services/warmPool.js";
 
 const log = logFor("server");
 const config = loadConfig();
+
+// The pid in the file when that process is still alive, else undefined.
+function livePid(file: string): number | undefined {
+  let pid: number;
+  try {
+    pid = Number.parseInt(readFileSync(file, "utf8"), 10);
+  } catch {
+    return undefined;
+  }
+  if (!Number.isInteger(pid) || pid <= 0) return undefined;
+  try {
+    process.kill(pid, 0);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EPERM") return undefined;
+  }
+  return pid;
+}
+
+/**
+ * One server per data directory: a second one would remove the first one's pool containers as
+ * orphans and fill a pool of its own before finding the port taken. The pid file names the
+ * running server; a file whose process is gone is stale and ignored.
+ */
+const pidFile = join(dirname(config.dbPath), "agentbox.pid");
+const running = livePid(pidFile);
+if (running !== undefined) {
+  log.fatal({ pid: running, pidFile }, `an agentbox server is already running on ${config.dbPath} (pid ${running}): stop it with npm stop, or delete ${pidFile} if that pid is not agentbox`);
+  process.exit(1);
+}
 const docker = new Docker();
 const store = new SqliteStore(config.dbPath);
 const runtime =
@@ -75,9 +104,7 @@ const reaper = setInterval(() => {
 if (config.apiKeys.length === 0) {
   log.warn("no API key is set, so auth is off; set AGENTBOX_API_KEY and HOST=0.0.0.0 to serve other machines");
 }
-// The pid next to the database, so `npm stop` can find the server behind the npm wrapper; written once the port is bound, so a second server that fails to bind cannot overwrite it.
-const pidFile = join(dirname(config.dbPath), "agentbox.pid");
-
+// The pid is written once the port is bound, so `npm stop` can find the server behind the npm wrapper and a server that failed to bind leaves nothing behind.
 const server = serve({ fetch: createApp(service, { apiKeys: config.apiKeys, logger: logFor("http") }).fetch, hostname: config.host, port: config.port }, (info) => {
   mkdirSync(dirname(pidFile), { recursive: true });
   writeFileSync(pidFile, `${process.pid}\n`);

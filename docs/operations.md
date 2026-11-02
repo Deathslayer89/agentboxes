@@ -22,7 +22,7 @@ The server listens on loopback and needs no auth until you say otherwise. To ser
 AGENTBOX_API_KEY=$(openssl rand -hex 16) HOST=0.0.0.0 npm start
 ```
 
-`http://127.0.0.1:7788/` is a status page: live sandboxes against the limit, the warm pool, host load and memory, and every live sandbox with its age, time to expiry, CPU share and memory, refreshed every two seconds from `GET /usage`. With auth on, the page asks for the key once and keeps it in the browser. If you run the server in the background, `npm stop` sends SIGTERM to the server process using the pid file it writes next to its database (`data/agentbox.pid`). Killing only the npm wrapper in front of it leaves the server running.
+`http://127.0.0.1:7788/` is a status page: live sandboxes against the limit, the warm pool, host load and memory, and every live sandbox with its age, time to expiry, CPU share and memory, refreshed every two seconds from `GET /usage`. With auth on, the page asks for the key once and keeps it in the browser. If you run the server in the background, `npm stop` sends SIGTERM to the server process using the pid file it writes next to its database (`data/agentbox.pid`). Killing only the npm wrapper in front of it leaves the server running. A second server on the same data directory refuses to start while that pid file names a live process, since two servers would remove each other's pool containers as orphans.
 
 Or run the server as a container, with gVisor installed on the host as above:
 
