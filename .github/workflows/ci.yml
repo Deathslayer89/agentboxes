@@ -21,7 +21,7 @@ jobs:
       - run: npm run test:python
       - run: npm run build
       - run: node bin/agentbox.js help
-      - run: sh -n bin/setup.sh
+      - run: sh -n bin/setup.sh && shellcheck bin/setup.sh
       - run: npm pack --dry-run
   integration:
     runs-on: ubuntu-24.04

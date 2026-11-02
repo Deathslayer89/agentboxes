@@ -4,7 +4,7 @@ Installing gVisor by hand, keys, the status page, stopping, the Docker image, wh
 
 ## Installing gVisor by hand
 
-`agentbox setup` (`bin/setup.sh`) is what the README runs: it checks that Docker answers, and when `runsc` is not a registered Docker runtime it installs gVisor from its apt repository on Debian and Ubuntu, or from the release tarball (checksum verified, unpacked into `/usr/local/bin`) elsewhere, runs `runsc install` for `runsc` and, when `/dev/kvm` exists, for `runsc-kvm` with `--platform=kvm`, reloads Docker, and starts one container under each runtime. Every `sudo` command is printed before it runs; `--check` installs nothing and exits non-zero when something is missing. CI runs it on a runner without gVisor before the integration tests. The same steps by hand, on Ubuntu or Debian:
+`agentbox setup` (`bin/setup.sh`) is what the README runs: it checks that Docker answers, and when `runsc` is not a registered Docker runtime it installs gVisor from its apt repository on Debian and Ubuntu, or from the release tarball (checksum verified, unpacked into `/usr/local/bin`) elsewhere, runs `runsc install` for `runsc` and, when `/dev/kvm` exists, for `runsc-kvm` with `--platform=kvm`, reloads Docker, and starts one container under each runtime; when the one under `runsc-kvm` fails, setup removes that runtime again and the server uses `runsc`. Every `sudo` command is printed before it runs; `--check` installs nothing and exits non-zero when `runsc` is not registered. CI runs it on a runner without gVisor before the integration tests. The same steps by hand, on Ubuntu or Debian:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y apt-transport-https ca-certificates curl gnupg

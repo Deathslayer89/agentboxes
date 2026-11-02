@@ -16,14 +16,16 @@ registered() { docker info --format '{{range $name, $_ := .Runtimes}}{{$name}} {
 command -v docker >/dev/null || fail "Docker is not installed: https://docs.docker.com/engine/install/"
 docker info >/dev/null 2>&1 || fail "Docker is installed but not reachable: is the daemon running, and is your user in the docker group?"
 
+# runsc is what the server needs; runsc-kvm is faster and is added when the host has /dev/kvm.
 missing=""
 if ! registered runsc; then missing="runsc"; fi
 if [ -e /dev/kvm ] && ! registered runsc-kvm; then missing="$missing runsc-kvm"; fi
 
-if [ -z "$missing" ]; then
+if $check_only; then
+  registered runsc || fail "runsc is not registered with Docker. Run without --check to install"
+  [ -z "$missing" ] || echo "runsc-kvm is not registered; a run without --check adds it"
+elif [ -z "$missing" ]; then
   echo "gVisor is registered with Docker"
-elif $check_only; then
-  fail "not registered with Docker:$missing. Run without --check to install"
 else
   if ! command -v runsc >/dev/null; then
     if command -v apt-get >/dev/null; then
@@ -57,6 +59,13 @@ fi
 echo "starting a container under runsc"
 docker run --rm --runtime=runsc "$image" uname -r | grep -q gvisor || fail "a container under runsc did not report a gVisor kernel"
 if registered runsc-kvm && ! docker run --rm --runtime=runsc-kvm "$image" true; then
-  fail "runsc-kvm is registered but a container under it failed; remove it with \"sudo $(command -v runsc) uninstall --runtime=runsc-kvm\" and reload Docker, or set AGENTBOX_RUNTIME=runsc"
+  case " $missing " in
+  *" runsc-kvm "*)
+    # Registered by this run, so it is removed again rather than left broken; the server then uses runsc.
+    root "$(command -v runsc)" uninstall --runtime=runsc-kvm
+    root systemctl reload docker
+    echo "runsc-kvm removed again: gVisor's KVM platform does not work on this host, so agentbox will use runsc" ;;
+  *) fail "runsc-kvm is registered but a container under it failed; remove it with \"sudo $(command -v runsc) uninstall --runtime=runsc-kvm\" and reload Docker, or set AGENTBOX_RUNTIME=runsc" ;;
+  esac
 fi
 echo "ready: run \"npx agentboxes serve\" (or \"agentbox serve\")"
