@@ -9,27 +9,18 @@ Status: 0.2.0 is the first published release. Everything in this file has a test
 - gVisor on every sandbox, read-only root, no capabilities, no host mounts, a memory and CPU cap, a TTL.
 - One npm package: the server, an MCP server for Claude Code and Cursor, and a TypeScript client. A Python client on PyPI.
 
+![A Python session creates a sandbox, runs code in it and destroys it, with the server's log below](docs/demo.gif)
+
 ## Install
 
-Linux, Docker 20+ (28+ for the network allowlist), Node 20+, and gVisor registered with Docker as the `runsc` runtime. The server refuses to start without it. On Ubuntu or Debian:
+Linux with Docker 20+ (28+ for the network allowlist) and Node 20+. The first command installs gVisor if it is missing and registers it with Docker as `runsc` (and as `runsc-kvm` on a host with `/dev/kvm`), printing each `sudo` step before it runs it, then starts one container under it with the server's default image to prove it works. `--check` only reports. The server refuses to start on anything but gVisor.
 
 ```bash
-sudo apt-get update && sudo apt-get install -y apt-transport-https ca-certificates curl gnupg
-curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list > /dev/null
-sudo apt-get update && sudo apt-get install -y runsc
-sudo runsc install
-sudo systemctl restart docker
-docker run --rm --runtime=runsc alpine uname -a   # kernel line ends in -gvisor: that is gVisor
+npx agentboxes setup     # Debian and Ubuntu get gVisor's apt repository, other distributions the release tarball
+npx agentboxes serve     # http://127.0.0.1:7788; Ctrl+C stops it
 ```
 
-Then:
-
-```bash
-npx agentboxes serve     # http://127.0.0.1:7788, pulls python:3.12-slim on the first run; Ctrl+C stops it
-```
-
-`npm install -g agentboxes` gives you the `agentbox` command for good: `agentbox serve`, `agentbox mcp`, `agentbox template build|list`. The server listens on loopback with no auth; to serve other machines set `AGENTBOX_API_KEY` and `HOST=0.0.0.0`. `http://127.0.0.1:7788/` is a status page with the live sandboxes, their CPU and memory, the pool and the host. A Docker image and everything about keys, logs and restarts: [docs/operations.md](docs/operations.md).
+`npm install -g agentboxes` gives you the `agentbox` command for good: `agentbox setup`, `agentbox serve`, `agentbox mcp`, `agentbox template build|list`. The server listens on loopback with no auth; to serve other machines set `AGENTBOX_API_KEY` and `HOST=0.0.0.0`. `http://127.0.0.1:7788/` is a status page with the live sandboxes, their CPU and memory, the pool and the host. Installing gVisor by hand, a Docker image and everything about keys, logs and restarts: [docs/operations.md](docs/operations.md).
 
 ## First sandbox
 
@@ -70,7 +61,35 @@ print(box.exec(["python", "-c", "print(2+2)"]).stdout)
 box.destroy()
 ```
 
-Both clients have no dependencies. Typed errors, streaming and the full method list: [docs/api.md](docs/api.md). A complete coding agent on the Anthropic SDK and a Mastra agent: [docs/examples.md](docs/examples.md).
+Both clients have no dependencies. Typed errors, streaming and the full method list: [docs/api.md](docs/api.md).
+
+## From an agent framework
+
+The same tool in three frameworks, each a complete example in one file: [Claude Agent SDK](examples/claude-agent-sdk/agent.py), [OpenAI Agents SDK](examples/openai-agents/agent.py) and [LangGraph](examples/langgraph/agent.py), plus [Mastra](examples/mastra/agent.ts) in TypeScript. The sandbox is these ten lines and the framework adds one:
+
+```python
+from agentbox import Agentbox, ExecTimeout
+box = Agentbox("http://127.0.0.1:7788").create()
+
+def run_python(code: str) -> str:
+    """Runs Python code in an isolated sandbox and returns its stdout and stderr."""
+    box.write_file("main.py", code)
+    try:
+        result = box.exec(["python", "main.py"], timeout_ms=60_000)
+    except ExecTimeout as killed:
+        result = killed.result
+    return result.stdout + result.stderr
+
+agent = create_agent(model="anthropic:claude-opus-5-5", tools=[run_python])   # LangGraph
+agent = Agent(name="coder", tools=[function_tool(run_python)])                  # OpenAI Agents SDK
+```
+
+```bash
+pip install -r examples/langgraph/requirements.txt
+ANTHROPIC_API_KEY=... python examples/langgraph/agent.py "Compute the first ten prime numbers and print them."
+```
+
+`npm run test:examples` loads all three against a running server and calls the tool; the model's turn needs your key. A complete coding agent on the Anthropic SDK that works on a whole repository: [docs/examples.md](docs/examples.md).
 
 ## What every sandbox gets
 

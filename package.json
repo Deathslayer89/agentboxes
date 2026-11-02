@@ -54,6 +54,7 @@
     "test": "tsx --test test/unit/*/*.test.ts",
     "test:integration": "tsx --test test/integration/sandbox.test.ts",
     "test:python": "python3 -m unittest discover -s sdk-python/tests -v",
+    "test:examples": "python3 -m unittest -v examples/test_python_examples.py",
     "test:firecracker": "tsx --test test/integration/firecracker.test.ts",
     "build": "node scripts/build.mjs",
     "prepack": "npm run build"

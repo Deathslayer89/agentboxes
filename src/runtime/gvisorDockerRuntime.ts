@@ -81,7 +81,7 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     if (this.runtimeName === "auto") this.runtimeName = "runsc-kvm" in registered ? "runsc-kvm" : "runsc";
     if (!(this.runtimeName in registered)) {
       throw new RuntimeUnavailableError(
-        `Docker runtime "${this.runtimeName}" is not registered. Install gVisor, run "sudo runsc install", then restart Docker.`,
+        `Docker runtime "${this.runtimeName}" is not registered. Run "npx agentboxes setup" to install gVisor and register it.`,
       );
     }
     await this.ensureImage();

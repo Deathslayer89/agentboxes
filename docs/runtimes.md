@@ -25,15 +25,11 @@ Measured on this machine through the HTTP API, median unless noted:
 
 ## gVisor's KVM platform
 
-By default runsc uses the systrap platform, which works everywhere. On a machine with `/dev/kvm`, the KVM platform runs gVisor's kernel as a guest and cuts syscall overhead. Register it as a second runtime (needs sudo); agentbox uses it automatically when it is there:
+By default runsc uses the systrap platform, which works everywhere. On a machine with `/dev/kvm`, the KVM platform runs gVisor's kernel as a guest and cuts syscall overhead. `agentbox setup` registers it as a second runtime when it sees `/dev/kvm`; by hand it is one command (needs sudo), and agentbox uses it automatically when it is there:
 
 ```bash
-sudo python3 - <<'PY'
-import json; p="/etc/docker/daemon.json"; d=json.load(open(p))
-d.setdefault("runtimes", {})["runsc-kvm"]={"path":"/usr/bin/runsc","runtimeArgs":["--platform=kvm"]}
-json.dump(d, open(p,"w"), indent=4)
-PY
-sudo systemctl restart docker
+sudo runsc install --runtime=runsc-kvm -- --platform=kvm
+sudo systemctl reload docker
 docker run --rm --runtime=runsc-kvm alpine uname -a
 npm start        # logs "runtime runsc-kvm"
 ```

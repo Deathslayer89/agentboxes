@@ -8,3 +8,4 @@ LATER.md
 THREAT_MODEL.md
 __pycache__/
 *.egg-info/
+sdk-python/build/

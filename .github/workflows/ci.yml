@@ -21,6 +21,7 @@ jobs:
       - run: npm run test:python
       - run: npm run build
       - run: node bin/agentbox.js help
+      - run: sh -n bin/setup.sh
       - run: npm pack --dry-run
   integration:
     runs-on: ubuntu-24.04
@@ -30,17 +31,23 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install gVisor and register runsc with Docker
+      - name: Set up the host with the package's own script
         run: |
-          curl -fsSL https://gvisor.dev/archive.key | sudo gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | sudo tee /etc/apt/sources.list.d/gvisor.list > /dev/null
-          sudo apt-get update && sudo apt-get install -y runsc
-          sudo runsc install
-          sudo systemctl restart docker
+          if bin/setup.sh --check; then echo "expected a runner without gVisor" && exit 1; fi
+          bin/setup.sh
+          bin/setup.sh --check
           docker version --format 'Docker {{.Server.Version}}'
-          docker run --rm --runtime=runsc alpine uname -a
       - run: npm ci
       - run: npm run test:integration
+      - name: Python examples against a live server
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -q ./sdk-python -r examples/openai-agents/requirements.txt -r examples/langgraph/requirements.txt -r examples/claude-agent-sdk/requirements.txt
+          npm start > server.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf localhost:7788/health > /dev/null && break; sleep 1; done
+          .venv/bin/python -m unittest -v examples/test_python_examples.py
+          npm stop
+          cat server.log
   image:
     runs-on: ubuntu-24.04
     steps:

@@ -1,0 +1,2 @@
+agentboxes>=0.2.0
+openai-agents>=0.24
