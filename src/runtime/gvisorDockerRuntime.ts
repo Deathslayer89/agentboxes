@@ -122,8 +122,8 @@ export class GvisorDockerRuntime implements SandboxRuntime {
   private async createAndStart(sandboxId: string, limits: SandboxLimits, image: string, attachment: EgressAttachment | undefined): Promise<string> {
     const container = await this.docker.createContainer({
       Image: image,
-      // PID 1 only sleeps; every command runs through `docker exec`, so one sandbox can run many commands.
-      Cmd: ["sleep", "infinity"],
+      // PID 1 is a shell that reaps the orphans commands leave behind; the commands themselves run through `docker exec`, so one sandbox can run many.
+      Cmd: ["sh", "-c", "while :; do wait; sleep 1; done"],
       User: SANDBOX_USER,
       WorkingDir: WORKSPACE,
       Hostname: "sandbox",

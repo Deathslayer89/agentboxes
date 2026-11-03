@@ -100,7 +100,7 @@ ANTHROPIC_API_KEY=... python examples/langgraph/agent.py "Compute the first ten 
 | Memory | 512 MB for processes, no swap; past the cap the whole sandbox is killed and its record says destroyed | `DEFAULT_MEMORY_MB`, `MAX_MEMORY_MB` |
 | CPUs | 1 | `DEFAULT_CPUS`, `MAX_CPUS` |
 | `/workspace` tmpfs | 1024 MB, memory-backed; the sandbox's hard memory cap is memory plus disk | `DEFAULT_DISK_MB`, `MAX_DISK_MB` |
-| Pids | 256 | `DEFAULT_PIDS`, `MAX_PIDS` |
+| Pids | 256; PID 1 reaps orphaned processes, so zombies do not count against it | `DEFAULT_PIDS`, `MAX_PIDS` |
 | TTL | 600 s | `DEFAULT_TTL_SECONDS`, `MAX_TTL_SECONDS` |
 | Exec timeout | 30 s, at most 30 min per command | `DEFAULT_EXEC_TIMEOUT_MS`, `MAX_EXEC_TIMEOUT_MS` |
 | Root filesystem | read-only | |
