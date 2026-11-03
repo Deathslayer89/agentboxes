@@ -274,3 +274,27 @@ test("adopt after a restart: running containers come back ready, gone ones are e
   assert.equal(service.get(networked.id).status, "destroyed");
   assert.equal(runtime.containers.has(networked.handle ?? ""), false);
 });
+
+test("the reaper closes a sandbox whose container exited on its own, and removes the container", async () => {
+  const { service, runtime } = makeService();
+  const { id, handle } = await service.create();
+  runtime.dead.add(handle as string);
+  const { died, orphans } = await service.reap();
+  assert.deepEqual(died, [id]);
+  assert.deepEqual(orphans, []);
+  assert.equal(service.get(id).status, "destroyed");
+  assert.equal(runtime.containers.size, 0);
+  await assert.rejects(service.exec(id, { cmd: ["true"] }), ConflictError);
+});
+
+test("a command that takes its container down leaves the record destroyed, not ready", async () => {
+  const { service, runtime } = makeService();
+  const { id } = await service.create();
+  runtime.nextExecResult = { exitCode: 137, timedOut: true, lost: true };
+  const r = await service.exec(id, { cmd: ["sh", "-c", "setsid sleep 300 &"] });
+  assert.equal(r.timedOut, true);
+  assert.equal("lost" in r, false);
+  assert.equal(service.get(id).status, "destroyed");
+  assert.equal(runtime.containers.size, 0);
+  await assert.rejects(service.exec(id, { cmd: ["true"] }), ConflictError);
+});

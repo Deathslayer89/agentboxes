@@ -39,6 +39,11 @@ export interface ExecOptions {
   signal?: AbortSignal;
 }
 
+// The client's result plus `lost`: true when the command took the whole sandbox down, so the service must mark it destroyed.
+export interface RuntimeExecResult extends ExecResult {
+  lost: boolean;
+}
+
 /**
  * What the service needs from an isolation backend. gVisor on Docker is the only
  * implementation in v0.1; Firecracker can be added later behind the same interface.
@@ -63,7 +68,7 @@ export interface SandboxRuntime {
    * Run one command inside the sandbox and wait for it. Must kill it at options.timeoutMs.
    * When onOutput is given, every chunk is passed to it as soon as it arrives.
    */
-  exec(handle: string, cmd: string[], options: ExecOptions, onOutput?: OutputListener): Promise<ExecResult>;
+  exec(handle: string, cmd: string[], options: ExecOptions, onOutput?: OutputListener): Promise<RuntimeExecResult>;
 
   /**
    * Write a file inside the sandbox, creating parent directories. `path` is absolute
@@ -88,7 +93,7 @@ export interface SandboxRuntime {
    * find orphans (containers the server no longer knows about, for example after a restart) and
    * the pool can drop containers that died while waiting.
    */
-  listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean }>>;
+  listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean; exited: boolean }>>;
 
   // Current CPU and memory of the given containers; one that is gone is left out.
   usage(handles: string[]): Promise<Record<string, SandboxUsage>>;

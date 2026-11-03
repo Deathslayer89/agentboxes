@@ -11,6 +11,7 @@ import os from "node:os";
 import test, { after, before } from "node:test";
 import Docker from "dockerode";
 import { SystemClock } from "../../src/clock.js";
+import { ConflictError } from "../../src/errors.js";
 import { loadConfig } from "../../src/config.js";
 import { RandomIdGenerator } from "../../src/id.js";
 import { InMemorySettings } from "../../src/repositories/inMemorySettings.js";
@@ -309,6 +310,24 @@ test("S3: an aborted exec is killed inside the sandbox, and the sandbox keeps wo
   }
   assert.equal(left, "", `sleep processes still alive: ${left}`);
   assert.equal((await service.exec(id, { cmd: ["echo", "alive"] })).stdout.trim(), "alive");
+});
+
+test("S3: a command past the memory cap takes the whole sandbox down; the reaper closes the record and removes the container", async () => {
+  const box = await service.create({ memoryMb: 256, diskMb: 64 });
+  const handle = box.handle;
+  // Under gVisor the cap applies to the sandbox as one host process, so the host kills all of it, not just the command.
+  const r = await service.exec(box.id, { cmd: ["python", "-c", "x = bytearray(1024 ** 3); print(len(x))"], timeoutMs: 60_000 });
+  assert.notEqual(r.exitCode, 0);
+  // Docker reports the exit a moment after the exec returns; the reaper picks it up on its next pass.
+  let status = service.get(box.id).status;
+  for (let i = 0; i < 50 && status !== "destroyed"; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await service.reap();
+    status = service.get(box.id).status;
+  }
+  assert.equal(status, "destroyed");
+  await assert.rejects(service.exec(box.id, { cmd: ["echo", "hi"] }), ConflictError);
+  assert.equal((await runtime.listManaged()).some((c) => c.handle === handle), false);
 });
 
 test("restart: a second server run adopts running sandboxes from the SQLite file and reuses the proxy", async () => {

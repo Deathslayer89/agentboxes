@@ -1,6 +1,6 @@
 import { ConflictError, NotFoundError } from "../errors.js";
-import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
-import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime, SandboxUsage } from "./sandboxRuntime.js";
+import type { SandboxLimits } from "../models/sandbox.js";
+import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime, SandboxUsage, RuntimeExecResult } from "./sandboxRuntime.js";
 
 // In-memory stand-in for tests: no Docker, no gVisor. Records what the service asked for.
 export class FakeRuntime implements SandboxRuntime {
@@ -14,7 +14,7 @@ export class FakeRuntime implements SandboxRuntime {
   // When set, every start() waits on it, so a test can see starts in flight.
   startGate: Promise<void> | undefined;
   // When set, merged into the next exec() result, for example { timedOut: true, exitCode: 137 }.
-  nextExecResult: Partial<ExecResult> | undefined;
+  nextExecResult: Partial<RuntimeExecResult> | undefined;
   // Handles whose container has exited; listManaged() reports them as not running.
   readonly dead = new Set<string>();
   private counter = 0;
@@ -53,7 +53,7 @@ export class FakeRuntime implements SandboxRuntime {
   async shutdown(): Promise<void> {}
 
   // Echoes the command back on stdout, in two chunks so streaming tests see more than one.
-  async exec(handle: string, cmd: string[], options: ExecOptions, onOutput?: OutputListener): Promise<ExecResult> {
+  async exec(handle: string, cmd: string[], options: ExecOptions, onOutput?: OutputListener): Promise<RuntimeExecResult> {
     this.container(handle);
     this.execCalls.push({ handle, cmd, options });
     const text = cmd.join(" ");
@@ -62,7 +62,7 @@ export class FakeRuntime implements SandboxRuntime {
     onOutput?.("stderr", Buffer.from(""));
     const override = this.nextExecResult ?? {};
     this.nextExecResult = undefined;
-    return { exitCode: 0, stdout: text, stderr: "", durationMs: 1, timedOut: false, truncated: false, ...override };
+    return { exitCode: 0, stdout: text, stderr: "", durationMs: 1, timedOut: false, truncated: false, lost: false, ...override };
   }
 
   async writeFile(handle: string, path: string, data: Buffer): Promise<void> {
@@ -90,8 +90,8 @@ export class FakeRuntime implements SandboxRuntime {
     this.containers.delete(handle);
   }
 
-  async listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean }>> {
-    return [...this.containers].map(([handle, c]) => ({ sandboxId: c.sandboxId, handle, running: !this.dead.has(handle) }));
+  async listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean; exited: boolean }>> {
+    return [...this.containers].map(([handle, c]) => ({ sandboxId: c.sandboxId, handle, running: !this.dead.has(handle), exited: this.dead.has(handle) }));
   }
 
   private container(handle: string) {

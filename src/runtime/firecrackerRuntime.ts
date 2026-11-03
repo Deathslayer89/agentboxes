@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
 import { ConflictError, NotFoundError, RuntimeUnavailableError, ValidationError } from "../errors.js";
 import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
-import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime, SandboxUsage } from "./sandboxRuntime.js";
+import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime, SandboxUsage, RuntimeExecResult } from "./sandboxRuntime.js";
 
 const MB = 1024 * 1024;
 // How long to wait for a VM to boot to READY, or for a restored one to answer the seed.
@@ -81,7 +81,7 @@ export class FirecrackerRuntime implements SandboxRuntime {
     return vm.id;
   }
 
-  async exec(handle: string, cmd: string[], options: ExecOptions, onOutput?: OutputListener): Promise<ExecResult> {
+  async exec(handle: string, cmd: string[], options: ExecOptions, onOutput?: OutputListener): Promise<RuntimeExecResult> {
     const vm = this.vm(handle);
     const script = [`cd ${quote(options.cwd)} || exit 127`, ...Object.entries(options.env).map(([k, v]) => `export ${k}=${quote(v)}`), `exec ${cmd.map(quote).join(" ")}`].join("\n");
     const startedAt = Date.now();
@@ -102,6 +102,8 @@ export class FirecrackerRuntime implements SandboxRuntime {
       durationMs,
       timedOut: exitCode === 137 && durationMs >= options.timeoutMs,
       truncated: stdout.length > this.maxOutputBytes || stderr.length > this.maxOutputBytes,
+      // A VM that died answers nothing and send() throws, so a result here always has a live VM behind it.
+      lost: false,
     };
   }
 
@@ -139,8 +141,8 @@ export class FirecrackerRuntime implements SandboxRuntime {
   }
 
   // Only VMs started by this process can be driven; a previous run's VMs were killed at init.
-  async listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean }>> {
-    return [...this.vms.keys()].map((id) => ({ sandboxId: id, handle: id, running: true }));
+  async listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean; exited: boolean }>> {
+    return [...this.vms].map(([id, vm]) => ({ sandboxId: id, handle: id, running: vm.process.exitCode === null, exited: vm.process.exitCode !== null }));
   }
 
   // The last CPU tick count per VM process, so the next usage() call can turn the difference into a percentage.

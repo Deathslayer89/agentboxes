@@ -97,7 +97,7 @@ ANTHROPIC_API_KEY=... python examples/langgraph/agent.py "Compute the first ten 
 |---|---|---|
 | Runtime | gVisor: `runsc-kvm` when registered, else `runsc` | `AGENTBOX_RUNTIME` (`auto`) |
 | Network | none, or an allowlist through the egress proxy | |
-| Memory | 512 MB for processes, no swap | `DEFAULT_MEMORY_MB`, `MAX_MEMORY_MB` |
+| Memory | 512 MB for processes, no swap; past the cap the whole sandbox is killed and its record says destroyed | `DEFAULT_MEMORY_MB`, `MAX_MEMORY_MB` |
 | CPUs | 1 | `DEFAULT_CPUS`, `MAX_CPUS` |
 | `/workspace` tmpfs | 1024 MB, memory-backed; the sandbox's hard memory cap is memory plus disk | `DEFAULT_DISK_MB`, `MAX_DISK_MB` |
 | Pids | 256 | `DEFAULT_PIDS`, `MAX_PIDS` |

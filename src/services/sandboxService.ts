@@ -212,11 +212,16 @@ export class SandboxService {
     this.log.debug({ sandbox: id, cmd, cwd: options.cwd, timeoutMs, env: Object.keys(options.env) }, "exec start");
     const startedAt = performance.now();
     try {
-      const result = await this.occupy(id, (handle) => this.runtime.exec(handle, request.cmd, options, onOutput));
+      const { lost, ...result } = await this.occupy(id, (handle) => this.runtime.exec(handle, request.cmd, options, onOutput));
       this.log.info(
         { sandbox: id, cmd, cwd: options.cwd, exitCode: result.exitCode, ms: result.durationMs, timedOut: result.timedOut, truncated: result.truncated, stdoutBytes: Buffer.byteLength(result.stdout), stderrBytes: Buffer.byteLength(result.stderr) },
         "exec done",
       );
+      if (lost) {
+        // The command took its container down, so the record is closed now instead of saying "ready" until the TTL.
+        this.log.warn({ sandbox: id, cmd }, "sandbox lost during exec; marked destroyed");
+        await this.remove(this.get(id), "destroyed");
+      }
       return result;
     } finally {
       this.metrics.observeExec((performance.now() - startedAt) / 1000);
@@ -331,11 +336,11 @@ export class SandboxService {
   }
 
   /**
-   * One reaper pass: destroy expired sandboxes, forget long-gone records, drop pool containers
-   * that died while waiting, and remove containers the runtime still has that this server does
-   * not know about.
+   * One reaper pass: destroy expired sandboxes, forget long-gone records, close sandboxes whose
+   * container exited on its own, drop pool containers that died while waiting, and remove
+   * containers the runtime still has that this server does not know about.
    */
-  async reap(): Promise<{ expired: string[]; orphans: string[]; dead: string[] }> {
+  async reap(): Promise<{ expired: string[]; died: string[]; orphans: string[]; dead: string[] }> {
     const now = this.clock.now().getTime();
     const expired: string[] = [];
     for (const sandbox of this.sandboxes.findAll()) {
@@ -349,8 +354,22 @@ export class SandboxService {
       }
     }
 
+    const all = await this.runtime.listManaged();
+    // A live sandbox whose container exited on its own (past the memory cap, gVisor is killed as a whole) is closed here, before the TTL would.
+    const died: string[] = [];
+    const diedHandles = new Set<string>();
+    const liveByHandle = new Map(this.sandboxes.findAll().filter((s) => !isGone(s) && s.handle !== undefined).map((s) => [s.handle, s]));
+    for (const { handle, exited } of all) {
+      const sandbox = liveByHandle.get(handle);
+      if (sandbox === undefined || !exited) continue;
+      this.log.warn({ sandbox: sandbox.id, owner: sandbox.owner, container: handle.slice(0, 12) }, "sandbox container exited on its own; marked destroyed");
+      await this.remove(sandbox, "destroyed");
+      died.push(sandbox.id);
+      diedHandles.add(handle);
+    }
+    const managed = all.filter((c) => !diedHandles.has(c.handle));
+
     const orphans: string[] = [];
-    const managed = await this.runtime.listManaged();
     // A dead pool container loses its slot first, so the orphan pass below removes it.
     const dead = this.pools.prune(new Set(managed.filter((c) => c.running).map((c) => c.handle)));
     for (const slot of dead) this.log.warn({ slot }, "pool container died while waiting; dropped");
@@ -365,7 +384,7 @@ export class SandboxService {
       this.log.info({ sandbox: sandboxId || undefined, container: handle.slice(0, 12) }, "orphaned container removed");
     }
     await this.pools.fill();
-    return { expired, orphans, dead };
+    return { expired, died, orphans, dead };
   }
 
   // Only memory, cpus, disk and pids shape the container, so a custom TTL can still use the pool.

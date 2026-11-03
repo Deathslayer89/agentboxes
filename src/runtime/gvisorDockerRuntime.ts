@@ -3,9 +3,9 @@ import Docker from "dockerode";
 import { Writable } from "node:stream";
 import { ConflictError, NotFoundError, RuntimeUnavailableError, ValidationError } from "../errors.js";
 import { logFor, type Logger } from "../log.js";
-import type { ExecResult, SandboxLimits } from "../models/sandbox.js";
+import type { SandboxLimits } from "../models/sandbox.js";
 import { CA_DIR, type EgressAttachment, type EgressProxyManager } from "./egressProxy.js";
-import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime, SandboxUsage } from "./sandboxRuntime.js";
+import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime, SandboxUsage, RuntimeExecResult } from "./sandboxRuntime.js";
 
 const WORKSPACE = "/workspace";
 // uid:gid of "nobody" in Debian based images. The sandbox never runs as root (S5).
@@ -51,6 +51,8 @@ interface RunResult {
   durationMs: number;
   // True when stdout or stderr went over the limit and was cut.
   truncated: boolean;
+  // True when the container is gone: killed by the guard, or dead by the time the command ended.
+  lost: boolean;
 }
 
 export class GvisorDockerRuntime implements SandboxRuntime {
@@ -181,7 +183,7 @@ export class GvisorDockerRuntime implements SandboxRuntime {
   // The proxy stays up so sandboxes adopted by the next server run keep their network.
   async shutdown(): Promise<void> {}
 
-  async exec(handle: string, cmd: string[], options: ExecOptions, onOutput?: OutputListener): Promise<ExecResult> {
+  async exec(handle: string, cmd: string[], options: ExecOptions, onOutput?: OutputListener): Promise<RuntimeExecResult> {
     const r = await this.run(handle, cmd, options.timeoutMs, {
       cwd: options.cwd,
       env: options.env,
@@ -195,6 +197,7 @@ export class GvisorDockerRuntime implements SandboxRuntime {
       durationMs: r.durationMs,
       timedOut: r.exitCode === 137 && r.durationMs >= options.timeoutMs,
       truncated: r.truncated,
+      lost: r.lost,
     };
   }
 
@@ -276,9 +279,10 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     return Object.fromEntries(entries.filter((entry): entry is [string, SandboxUsage] => entry !== undefined));
   }
 
-  async listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean }>> {
+  async listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean; exited: boolean }>> {
     const containers = await this.docker.listContainers({ all: true, filters: { label: [`${LABEL}=1`] } });
-    return containers.map((c) => ({ sandboxId: c.Labels[LABEL_ID] ?? "", handle: c.Id, running: c.State === "running" }));
+    // A container that is neither running nor exited is still being created; only "exited" and "dead" are final.
+    return containers.map((c) => ({ sandboxId: c.Labels[LABEL_ID] ?? "", handle: c.Id, running: c.State === "running", exited: c.State === "exited" || c.State === "dead" }));
   }
 
   /**
@@ -315,7 +319,9 @@ export class GvisorDockerRuntime implements SandboxRuntime {
        * Backstop for a process that keeps the output pipe open past the deadline
        * (for example a daemonised grandchild). The sandbox is lost in that case.
        */
+      let lost = false;
       const guard = setTimeout(() => {
+        lost = true;
         container.kill().catch(() => {});
         stream.destroy();
       }, timeoutMs + GUARD_MS);
@@ -331,18 +337,29 @@ export class GvisorDockerRuntime implements SandboxRuntime {
 
       const durationMs = Date.now() - startedAt;
       const { ExitCode } = await exec.inspect();
+      // ExitCode is null when the container died under us; a dead container means the sandbox is lost, whatever killed it.
+      if (ExitCode === null && !lost) lost = !(await this.running(container));
       return {
-        // ExitCode is null when the container died under us; report that as killed.
-        exitCode: ExitCode ?? 137,
+        exitCode: lost ? 137 : (ExitCode ?? 137),
         stdout: stdout.bytes(),
         stderr: stderr.bytes(),
         durationMs,
         truncated: stdout.truncated || stderr.truncated,
+        lost,
       };
     } catch (e) {
       throw translateDockerError(e);
     } finally {
       options.signal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  // False when the container has stopped or no longer exists.
+  private async running(container: Docker.Container): Promise<boolean> {
+    try {
+      return ((await container.inspect()) as { State: { Running: boolean } }).State.Running;
+    } catch {
+      return false;
     }
   }
 

@@ -10,6 +10,9 @@ curl -s -X POST localhost:7788/sandboxes -d '{}'
 # run a command
 curl -s -X POST localhost:7788/sandboxes/sbx_.../exec -d '{"cmd":["python","-c","print(2+2)"],"timeoutMs":5000}'
 # {"exitCode":0,"stdout":"4\n","stderr":"","durationMs":...,"timedOut":false,"truncated":false}
+# past timeoutMs the command and its process group are killed: exitCode 137, timedOut true. A command that pushes the
+# sandbox past its memory cap takes the whole sandbox down (gVisor is one host process); the record then says destroyed
+# within the reaper's 10 s tick, and every later call on it answers 409.
 
 # same body, but stdout and stderr arrive as Server-Sent Events while the command runs, then an exit event
 curl -s -N -X POST localhost:7788/sandboxes/sbx_.../exec/stream -d '{"cmd":["python","-c","import time\nfor i in range(3): print(i); time.sleep(1)"]}'
