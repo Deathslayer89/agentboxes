@@ -85,6 +85,12 @@ export interface SandboxRuntime {
   // Pack `dir` as a tar archive. Throws NotFoundError if it does not exist.
   getArchive(handle: string, dir: string): Promise<Buffer>;
 
+  /**
+   * Tells the sandbox when to end itself, so its TTL holds while no server runs. Best effort:
+   * the server's reaper enforces the TTL while it runs anyway.
+   */
+  setDeadline(handle: string, at: Date): Promise<void>;
+
   // Stop and remove the container. Must not fail if it is already gone.
   destroy(handle: string): Promise<void>;
 

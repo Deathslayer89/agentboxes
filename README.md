@@ -1,26 +1,32 @@
 # agentbox
 
-Self-hosted sandboxes for AI agents. Runs on any Linux box with Docker and gVisor; no KVM needed.
+Self-hosted sandboxes for AI agents. It runs on any Linux machine with Docker and gVisor, so you don't need KVM.
 
-Status: 0.2.0 is the first published release. Everything in this file has a test or a benchmark behind it; the numbers name the machine they were measured on.
+Published on npm and PyPI as `agentboxes`.
 
-- A sandbox from the warm pool in about 1 ms, cold in about 130 ms, a command round trip in about 30 ms, 16 MB of host memory per idle sandbox.
-- No network unless you list the hosts; secrets go in through a proxy and are never inside the sandbox.
-- gVisor on every sandbox, read-only root, no capabilities, no host mounts, a memory and CPU cap, a TTL.
-- One npm package: the server, an MCP server for Claude Code and Cursor, and a TypeScript client. A Python client on PyPI.
+What you get:
+
+- A sandbox in about 1 ms from the warm pool (130 ms cold), and about 30 ms per command.
+- No network by default. You list the hosts a sandbox may reach, and API keys are added by a proxy on the way out, so they never sit inside the sandbox.
+- Every sandbox runs under gVisor with a read-only root, no capabilities, no host mounts, memory and CPU limits, and a TTL.
+- One npm package with the server, an MCP server for Claude Code and Cursor, and a TypeScript client. There's a Python client too.
 
 ![A Python session creates a sandbox, runs code in it and destroys it, with the server's log below](docs/demo.gif)
 
 ## Install
 
-Linux with Docker 20+ (28+ for the network allowlist) and Node 20+. The first command installs gVisor if it is missing and registers it with Docker as `runsc` (and as `runsc-kvm` on a host with `/dev/kvm`), printing each `sudo` step before it runs it, then starts one container under it with the server's default image to prove it works. `--check` only reports. The server refuses to start on anything but gVisor.
+You need Linux, Docker 20+ (28+ if you want the network allowlist) and Node 20+.
 
 ```bash
-npx agentboxes setup     # Debian and Ubuntu get gVisor's apt repository, other distributions the release tarball
-npx agentboxes serve     # http://127.0.0.1:7788; Ctrl+C stops it
+npx agentboxes setup     # installs gVisor if it's missing and checks it works
+npx agentboxes serve     # starts the server on http://127.0.0.1:7788
 ```
 
-`npm install -g agentboxes` gives you the `agentbox` command for good: `agentbox setup`, `agentbox serve`, `agentbox mcp`, `agentbox template build|list`. The server listens on loopback with no auth; to serve other machines set `AGENTBOX_API_KEY` and `HOST=0.0.0.0`. `http://127.0.0.1:7788/` is a status page with the live sandboxes, their CPU and memory, the pool and the host. Installing gVisor by hand, a Docker image and everything about keys, logs and restarts: [docs/operations.md](docs/operations.md).
+`setup` prints every `sudo` command before running it. Use `setup --check` if you only want a report. The server won't start without gVisor.
+
+To keep the `agentbox` command around, run `npm install -g agentboxes`. You then get `agentbox setup`, `serve`, `mcp` and `template build|list`.
+
+By default the server listens on localhost with no auth. To expose it to other machines, set `AGENTBOX_API_KEY` and `HOST=0.0.0.0`. Open `http://127.0.0.1:7788/` for a status page showing live sandboxes, their CPU and memory use, and the pool. Manual gVisor install, the Docker image, keys and logs are covered in [docs/operations.md](docs/operations.md).
 
 ## First sandbox
 
@@ -32,7 +38,7 @@ curl -s -X POST localhost:7788/sandboxes/sbx_.../exec -d '{"cmd":["python","-c",
 curl -s -X DELETE localhost:7788/sandboxes/sbx_...
 ```
 
-Files, tar archives of whole trees, streaming output, extend, list: [docs/api.md](docs/api.md).
+File upload and download, tar archives, streaming output and the rest of the API are in [docs/api.md](docs/api.md).
 
 ## From Claude Code or Cursor
 
@@ -40,7 +46,7 @@ Files, tar archives of whole trees, streaming output, extend, list: [docs/api.md
 claude mcp add agentbox -e AGENTBOX_URL=http://127.0.0.1:7788 -- npx -y agentboxes mcp
 ```
 
-Five tools: `run_code`, `run_command`, `write_file`, `read_file`, `reset_sandbox`. One sandbox per session, created on the first call, kept alive while in use, destroyed when the client disconnects. The Cursor config and the environment variables (template, allowed hosts, TTL) are in [docs/api.md](docs/api.md).
+This adds five tools: `run_code`, `run_command`, `write_file`, `read_file` and `reset_sandbox`. Each session gets one sandbox. It's created on the first call and destroyed when the client disconnects. The Cursor config and options (template, allowed hosts, TTL) are in [docs/api.md](docs/api.md).
 
 ## From code
 
@@ -61,11 +67,11 @@ print(box.exec(["python", "-c", "print(2+2)"]).stdout)
 box.destroy()
 ```
 
-Both clients have no dependencies. Typed errors, streaming and the full method list: [docs/api.md](docs/api.md).
+Neither client has dependencies. See [docs/api.md](docs/api.md) for errors, streaming and every method.
 
 ## From an agent framework
 
-The same tool in three frameworks, each a complete example in one file: [Claude Agent SDK](examples/claude-agent-sdk/agent.py), [OpenAI Agents SDK](examples/openai-agents/agent.py) and [LangGraph](examples/langgraph/agent.py), plus [Mastra](examples/mastra/agent.ts) in TypeScript. The sandbox is these ten lines and the framework adds one:
+There are one-file examples for the [Claude Agent SDK](examples/claude-agent-sdk/agent.py), [OpenAI Agents SDK](examples/openai-agents/agent.py), [LangGraph](examples/langgraph/agent.py) and [Mastra](examples/mastra/agent.ts) (TypeScript). The sandbox part is the same in each:
 
 ```python
 from agentbox import Agentbox, ExecTimeout
@@ -89,51 +95,59 @@ pip install -r examples/langgraph/requirements.txt
 ANTHROPIC_API_KEY=... python examples/langgraph/agent.py "Compute the first ten prime numbers and print them."
 ```
 
-`npm run test:examples` loads all three against a running server and calls the tool; the model's turn needs your key. A complete coding agent on the Anthropic SDK that works on a whole repository: [docs/examples.md](docs/examples.md).
+`npm run test:examples` loads the examples against a live server and calls the sandbox tool; no model is involved, so it needs no key. Running an example itself needs your API key. For a fuller coding agent that works on a whole repo, see [docs/examples.md](docs/examples.md).
 
-## What every sandbox gets
+## Sandbox defaults
 
 | | Default | Env var |
 |---|---|---|
-| Runtime | gVisor: `runsc-kvm` when registered, else `runsc` | `AGENTBOX_RUNTIME` (`auto`) |
+| Runtime | gVisor (`runsc-kvm` if available, otherwise `runsc`) | `AGENTBOX_RUNTIME` |
 | Network | none, or an allowlist through the egress proxy | |
-| Memory | 512 MB for processes, no swap; past the cap the whole sandbox is killed and its record says destroyed | `DEFAULT_MEMORY_MB`, `MAX_MEMORY_MB` |
+| Memory | 512 MB, no swap. Going over kills the sandbox. | `DEFAULT_MEMORY_MB`, `MAX_MEMORY_MB` |
 | CPUs | 1 | `DEFAULT_CPUS`, `MAX_CPUS` |
-| `/workspace` tmpfs | 1024 MB, memory-backed; the sandbox's hard memory cap is memory plus disk | `DEFAULT_DISK_MB`, `MAX_DISK_MB` |
-| Pids | 256; PID 1 reaps orphaned processes, so zombies do not count against it | `DEFAULT_PIDS`, `MAX_PIDS` |
-| TTL | 600 s | `DEFAULT_TTL_SECONDS`, `MAX_TTL_SECONDS` |
-| Exec timeout | 30 s, at most 30 min per command | `DEFAULT_EXEC_TIMEOUT_MS`, `MAX_EXEC_TIMEOUT_MS` |
+| `/workspace` | 1024 MB tmpfs in RAM; the hard memory cap is memory plus this | `DEFAULT_DISK_MB`, `MAX_DISK_MB` |
+| Processes | 256. Going over kills the sandbox. Zombies are reaped and don't count. | `DEFAULT_PIDS`, `MAX_PIDS` |
+| TTL | 10 min, held by the sandbox itself even while the server is down | `DEFAULT_TTL_SECONDS`, `MAX_TTL_SECONDS` |
+| Command timeout | 30 s (max 30 min) | `DEFAULT_EXEC_TIMEOUT_MS`, `MAX_EXEC_TIMEOUT_MS` |
 | Root filesystem | read-only | |
-| User | `nobody` (65534), `--cap-drop=ALL`, `no-new-privileges` | |
-| Host mounts, docker socket, host env | none | |
+| User | `nobody`, all capabilities dropped, `no-new-privileges` | |
+| Host mounts, Docker socket, host env | none | |
 
-Other settings: `PORT` (7788), `HOST`, `AGENTBOX_API_KEY`, `AGENTBOX_IMAGE` (`python:3.12-slim`), `MAX_SANDBOXES` (20), `MAX_OUTPUT_BYTES` per stream per exec (1 MiB, output past it is dropped and `truncated` is true), `MAX_FILE_BYTES` (8 MiB), `MAX_ARCHIVE_BYTES` (256 MiB), `POOL_SIZES` (`default:3`), `REAPER_INTERVAL_MS` (10000).
+Other settings, with defaults:
+- `PORT` (7788), `HOST`, `AGENTBOX_API_KEY`
+- `AGENTBOX_IMAGE` (`python:3.12-slim`), `MAX_SANDBOXES` (20), `POOL_SIZES` (`default:3`)
+- `MAX_OUTPUT_BYTES` (1 MiB per stream per command; anything past that is dropped and `truncated` is set), `MAX_FILE_BYTES` (8 MiB), `MAX_ARCHIVE_BYTES` (256 MiB)
+- `REAPER_INTERVAL_MS` (10000)
 
 ## Network and secrets
 
-A sandbox has no network at all unless the request lists hosts:
+A sandbox has no network unless you list hosts when you create it:
 
 ```bash
 curl -s -X POST localhost:7788/sandboxes -d '{"allowHosts":["pypi.org","files.pythonhosted.org"]}'
 curl -s -X POST localhost:7788/sandboxes -d '{"secrets":{"api.openai.com":"OPENAI_API_KEY"}}'
 ```
 
-The first gets its own network whose only neighbour is an egress proxy; the proxy allows the listed hosts on ports 80 and 443 (`host:port` for one other port), refuses everything else and logs each refusal to `GET /sandboxes/:id/egress-log`, and never lets a name resolve to the host, the cloud metadata address or any private range. The second reads `OPENAI_API_KEY` from the server's environment, gives it only to the proxy, and the proxy sets the header on the way out; a test greps the sandbox's environment and filesystem for the value and finds nothing. The whole design, `x-api-key` style headers, and what tools honour the proxy: [docs/network.md](docs/network.md).
+With `allowHosts`, the sandbox gets its own network where the only thing it can reach is an egress proxy. The proxy allows those hosts on ports 80 and 443 (write `host:port` for another port) and refuses everything else. Refusals are logged at `GET /sandboxes/:id/egress-log`. An allowed hostname that resolves to localhost, the cloud metadata address or a private IP is refused too.
+
+With `secrets`, the server reads `OPENAI_API_KEY` from its own environment and hands it only to the proxy, which adds the header to outgoing requests. The sandbox never sees the key. There's a test that searches the sandbox's environment and files for it and checks it isn't there.
+
+More detail, including custom headers like `x-api-key` and which tools respect the proxy, is in [docs/network.md](docs/network.md).
 
 ## Templates
 
-A template is a Docker image with packages preinstalled, labelled so the server lists it:
+A template is a Docker image with your packages preinstalled:
 
 ```bash
 agentbox template build data-science ./Dockerfile    # FROM python:3.12-slim, RUN pip install pandas numpy
 curl -s -X POST localhost:7788/sandboxes -d '{"template":"data-science"}'
 ```
 
-`templates/node/Dockerfile` ships a Node 22 template. Pools per template, what an `npm ci` needs, and the rules: [docs/templates.md](docs/templates.md).
+There's a Node 22 template in `templates/node/Dockerfile`. Pools per template and `npm ci` notes are in [docs/templates.md](docs/templates.md).
 
-## Numbers
+## Performance
 
-Through the HTTP API on an i7-12700H with Docker 29 and runsc release-20261026.0:
+Measured through the HTTP API on an i7-12700H laptop (Docker 29, runsc release-20261026.0):
 
 | | p50 | p95 |
 |---|---|---|
@@ -141,22 +155,24 @@ Through the HTTP API on an i7-12700H with Docker 29 and runsc release-20261026.0
 | create cold | 130 ms | 154 ms |
 | exec `print(2+2)` | 31 ms | 36 ms |
 
-An idle sandbox holds about 16 MB of host memory. gVisor against runc on common tasks: Python startup 1.3x, `pip install` 1.1x, `npm install` 1.35x on the default platform and 1.12x on KVM. `npm run bench` reproduces the table; the method and the KVM and Firecracker figures are in [docs/benchmarks.md](docs/benchmarks.md) and [docs/runtimes.md](docs/runtimes.md).
+An idle sandbox uses about 16 MB of host memory. Compared to plain Docker (runc), gVisor makes Python startup about 1.3x slower, `pip install` 1.1x and `npm install` 1.35x (1.12x with KVM).
 
-## What this is not
+Run `npm run bench` to reproduce the table. The method, plus KVM and Firecracker numbers, is in [docs/benchmarks.md](docs/benchmarks.md) and [docs/runtimes.md](docs/runtimes.md).
 
-- Not multi-node: one server per Docker host. Records are in SQLite and a server restart adopts running sandboxes, but a Docker restart loses the egress proxy's state.
-- Not KVM-level isolation by default: gVisor is a user-space kernel that handles most syscalls itself, but the host kernel still serves the ones it forwards, and the sentry runs as a host process. The Firecracker runtime gives each sandbox its own kernel, at the cost of the features it does not support yet.
-- Not multi-tenant beyond API keys: keys partition sandboxes and carry limits, but they share one proxy, one pool and one Docker host.
-- Not disk-backed: `/workspace` is a tmpfs, so a large `node_modules` or repository is held in RAM, up to `diskMb`. Writing past `diskMb` fails with "no space left", not an OOM kill.
-- Not a preview host: nothing inside a sandbox is reachable from outside, and nothing is persisted after the TTL.
+## Limitations
 
-## More
+- Single host. One server per Docker host. Sandbox records are in SQLite, and a restarted server picks up the sandboxes that are still running. Restarting Docker, though, loses the egress proxy's state.
+- gVisor isn't a VM. It handles most syscalls itself, but some still reach the host kernel. If you need a separate kernel per sandbox, there's a Firecracker runtime, though it doesn't support every feature yet.
+- API keys separate users' sandboxes and limits, but everyone shares the same proxy, pool and Docker host, so this isn't strong multi-tenancy.
+- `/workspace` lives in RAM. A big `node_modules` or repo uses memory, up to `diskMb`. Going past it gives "no space left", not an OOM kill.
+- Nothing inside a sandbox is reachable from outside, and nothing is kept after the TTL, so you can't use it to host previews.
 
-- [docs/api.md](docs/api.md): every endpoint, both clients, the MCP server
-- [docs/operations.md](docs/operations.md): keys and limits per key, the status page, logs, the Docker image, what survives a restart
-- [docs/network.md](docs/network.md): the allowlist and secret injection in full
+## Docs
+
+- [docs/api.md](docs/api.md): endpoints, both clients, the MCP server
+- [docs/operations.md](docs/operations.md): API keys and limits, the status page, logs, the Docker image, restarts
+- [docs/network.md](docs/network.md): the allowlist and secret injection
 - [docs/templates.md](docs/templates.md), [docs/runtimes.md](docs/runtimes.md), [docs/benchmarks.md](docs/benchmarks.md), [docs/examples.md](docs/examples.md)
-- [docs/development.md](docs/development.md): tests, layout, running from a clone
+- [docs/development.md](docs/development.md): tests, code layout, running from source
 
-MIT licensed.
+MIT license.

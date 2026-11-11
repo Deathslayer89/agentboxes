@@ -17,6 +17,8 @@ export class FakeRuntime implements SandboxRuntime {
   nextExecResult: Partial<RuntimeExecResult> | undefined;
   // Handles whose container has exited; listManaged() reports them as not running.
   readonly dead = new Set<string>();
+  // handle -> the last deadline the service set
+  readonly deadlines = new Map<string, Date>();
   private counter = 0;
 
   async init(): Promise<void> {}
@@ -84,6 +86,11 @@ export class FakeRuntime implements SandboxRuntime {
     const tar = this.container(handle).files.get(`${dir}.tar`);
     if (tar === undefined) throw new NotFoundError(`cannot pack ${dir}`);
     return tar;
+  }
+
+  async setDeadline(handle: string, at: Date): Promise<void> {
+    this.container(handle);
+    this.deadlines.set(handle, at);
   }
 
   async destroy(handle: string): Promise<void> {

@@ -103,6 +103,7 @@ export class SandboxService {
     sandbox.startup.ms = Math.round((performance.now() - startedAt) * 10) / 10;
     sandbox.status = "ready";
     this.sandboxes.save(sandbox);
+    this.armDeadline(sandbox);
     this.metrics.creates[sandbox.startup.source] += 1;
     this.log.info(
       { sandbox: sandbox.id, owner, template, source: sandbox.startup.source, ms: sandbox.startup.ms, limits, allowHosts: egress?.network.allowHosts, secretHosts: egress?.network.secretHosts },
@@ -293,8 +294,15 @@ export class SandboxService {
     }
     sandbox.expiresAt = new Date(this.clock.now().getTime() + ttl * 1000);
     this.sandboxes.save(sandbox);
+    this.armDeadline(sandbox);
     this.log.info({ sandbox: id, ttlSeconds: ttl, expiresAt: sandbox.expiresAt }, "sandbox extended");
     return sandbox;
+  }
+
+  // Not awaited, so a pool create stays at a millisecond; the reaper enforces the TTL while the server runs anyway.
+  private armDeadline(sandbox: Sandbox): void {
+    if (sandbox.handle === undefined) return;
+    this.runtime.setDeadline(sandbox.handle, sandbox.expiresAt).catch((err: unknown) => this.log.warn({ sandbox: sandbox.id, err }, "could not arm the sandbox's own deadline"));
   }
 
   async destroy(id: string): Promise<Sandbox> {

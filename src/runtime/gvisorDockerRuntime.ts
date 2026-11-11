@@ -24,6 +24,8 @@ const LABEL_NETWORKED = "agentbox.networked";
  * kill the whole container.
  */
 const GUARD_MS = 5_000;
+// Where PID 1 reads the sandbox's end time, as epoch seconds. Written as root, so the sandbox user cannot move it.
+const DEADLINE_FILE = "/tmp/.agentbox_deadline";
 // File reads and writes are plain `cat`; this only matters if the path is a FIFO.
 const FILE_TIMEOUT_MS = 30_000;
 const ARCHIVE_TIMEOUT_MS = 300_000;
@@ -42,6 +44,8 @@ interface RunOptions {
   onOutput?: OutputListener;
   // Cap per stream on what is kept in memory. Defaults to maxOutputBytes.
   limit?: number;
+  // Run as this user instead of the sandbox user; only the deadline write uses root.
+  user?: string;
 }
 
 interface RunResult {
@@ -122,8 +126,13 @@ export class GvisorDockerRuntime implements SandboxRuntime {
   private async createAndStart(sandboxId: string, limits: SandboxLimits, image: string, attachment: EgressAttachment | undefined): Promise<string> {
     const container = await this.docker.createContainer({
       Image: image,
-      // PID 1 is a shell that reaps the orphans commands leave behind; the commands themselves run through `docker exec`, so one sandbox can run many.
-      Cmd: ["sh", "-c", "while :; do wait; sleep 1; done"],
+      /**
+       * PID 1: a shell that reaps the orphans commands leave behind and ends the sandbox at the deadline
+       * in DEADLINE_FILE, so the TTL holds while no server runs. One fork per 30 s and shell builtins
+       * otherwise, because a process start under gVisor costs milliseconds of CPU. The commands
+       * themselves run through `docker exec`, so one sandbox can run many.
+       */
+      Cmd: ["sh", "-c", `start=$(date +%s); t=0; while :; do sleep 30 & wait $!; t=$((t+30)); if [ -f ${DEADLINE_FILE} ] && read d < ${DEADLINE_FILE} && [ $((start+t)) -ge "$d" ]; then exit 0; fi; done`],
       User: SANDBOX_USER,
       WorkingDir: WORKSPACE,
       Hostname: "sandbox",
@@ -174,6 +183,11 @@ export class GvisorDockerRuntime implements SandboxRuntime {
 
   async egressLog(sandboxId: string): Promise<DeniedRequest[]> {
     return this.egress.deniedLog(sandboxId);
+  }
+
+  async setDeadline(handle: string, at: Date): Promise<void> {
+    const r = await this.run(handle, ["sh", "-c", `echo ${Math.ceil(at.getTime() / 1000)} > ${DEADLINE_FILE}`], FILE_TIMEOUT_MS, { user: "0" });
+    if (r.exitCode !== 0) throw new Error(`could not write the deadline: ${r.stderr.toString("utf8").trim()}`);
   }
 
   egressKept(): boolean {
@@ -304,6 +318,7 @@ export class GvisorDockerRuntime implements SandboxRuntime {
         AttachStderr: true,
         WorkingDir: options.cwd ?? WORKSPACE,
         Env: [marker, ...Object.entries(options.env ?? {}).map(([key, value]) => `${key}=${value}`)],
+        ...(options.user === undefined ? {} : { User: options.user }),
       });
       const stdout = new OutputBuffer(limit, (chunk) => options.onOutput?.("stdout", chunk));
       const stderr = new OutputBuffer(limit, (chunk) => options.onOutput?.("stderr", chunk));

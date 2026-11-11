@@ -353,6 +353,22 @@ test("S3: PID 1 reaps orphaned processes, so a long session does not fill the pi
   assert.equal(r.stdout.trim(), "0");
 });
 
+test("the TTL holds while the server is down: PID 1 ends the sandbox at its deadline, and the next reaper pass marks it expired", async () => {
+  const box = await service.create({ ttlSeconds: 5 });
+  const handle = box.handle;
+  // No reaper pass runs here, so the container has to stop by itself; PID 1 checks its deadline every 30 s.
+  let exited = false;
+  for (let i = 0; i < 90 && !exited; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    exited = (await runtime.listManaged()).some((c) => c.handle === handle && c.exited);
+  }
+  assert.equal(exited, true, "the container did not stop by itself");
+  const { expired } = await service.reap();
+  assert.ok(expired.includes(box.id));
+  assert.equal(service.get(box.id).status, "expired");
+  assert.equal((await runtime.listManaged()).some((c) => c.handle === handle), false);
+});
+
 test("restart: a second server run adopts running sandboxes from the SQLite file and reuses the proxy", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agentbox-restart-"));
   const path = join(dir, "agentbox.db");

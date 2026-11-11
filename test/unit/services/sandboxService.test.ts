@@ -275,6 +275,14 @@ test("adopt after a restart: running containers come back ready, gone ones are e
   assert.equal(runtime.containers.has(networked.handle ?? ""), false);
 });
 
+test("create and extend hand the runtime the sandbox's deadline, so it can end itself while the server is down", async () => {
+  const { service, runtime, clock } = makeService();
+  const box = await service.create({ ttlSeconds: 60 });
+  assert.equal(runtime.deadlines.get(box.handle as string)?.getTime(), clock.now().getTime() + 60_000);
+  service.extend(box.id, 120);
+  assert.equal(runtime.deadlines.get(box.handle as string)?.getTime(), clock.now().getTime() + 120_000);
+});
+
 test("the reaper closes a sandbox whose container exited on its own, and removes the container", async () => {
   const { service, runtime } = makeService();
   const { id, handle } = await service.create();

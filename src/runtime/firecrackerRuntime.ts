@@ -129,6 +129,9 @@ export class FirecrackerRuntime implements SandboxRuntime {
     return Buffer.from(r.stdout, "base64");
   }
 
+  // A VM cannot outlive the server: the next start kills every VM it finds, so there is nothing to arm.
+  async setDeadline(): Promise<void> {}
+
   async destroy(handle: string): Promise<void> {
     const vm = this.vms.get(handle);
     if (vm === undefined) return;
