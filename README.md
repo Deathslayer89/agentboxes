@@ -106,7 +106,7 @@ ANTHROPIC_API_KEY=... python examples/langgraph/agent.py "Compute the first ten 
 | Memory | 512 MB, no swap. Going over kills the sandbox. | `DEFAULT_MEMORY_MB`, `MAX_MEMORY_MB` |
 | CPUs | 1 | `DEFAULT_CPUS`, `MAX_CPUS` |
 | `/workspace` | 1024 MB tmpfs in RAM; the hard memory cap is memory plus this | `DEFAULT_DISK_MB`, `MAX_DISK_MB` |
-| Processes | 256. Going over kills the sandbox. Zombies are reaped and don't count. | `DEFAULT_PIDS`, `MAX_PIDS` |
+| Processes | 256. Past that, new processes fail to start; the sandbox keeps running. Zombies are reaped and don't count. | `DEFAULT_PIDS`, `MAX_PIDS` |
 | TTL | 10 min, held by the sandbox itself even while the server is down | `DEFAULT_TTL_SECONDS`, `MAX_TTL_SECONDS` |
 | Command timeout | 30 s (max 30 min) | `DEFAULT_EXEC_TIMEOUT_MS`, `MAX_EXEC_TIMEOUT_MS` |
 | Root filesystem | read-only | |

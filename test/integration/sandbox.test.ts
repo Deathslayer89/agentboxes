@@ -330,21 +330,15 @@ test("S3: a command past the memory cap takes the whole sandbox down; the reaper
   assert.equal((await runtime.listManaged()).some((c) => c.handle === handle), false);
 });
 
-test("S3: a fork bomb takes down only its own sandbox: the host and other sandboxes go on, and the reaper closes the record", async () => {
+test("S3: the process limit contains a fork bomb: the host and other sandboxes go on, and the sandbox is not taken down", async () => {
   const box = await service.create();
-  const handle = box.handle;
-  // Under gVisor the pids limit ends the whole sandbox, the same way the memory cap does; the host never sees the processes.
+  // RLIMIT_NPROC caps the sandbox user's processes, so forks start failing instead of the bomb growing until the memory cap.
   const r = await service.exec(box.id, { cmd: ["sh", "-c", "bomb() { bomb | bomb & }; bomb; sleep 30"], timeoutMs: 20_000 });
   assert.notEqual(r.exitCode, 0);
   assert.equal((await run(["echo", "still here"])).stdout.trim(), "still here");
-  let status = service.get(box.id).status;
-  for (let i = 0; i < 50 && status !== "destroyed"; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    await service.reap();
-    status = service.get(box.id).status;
-  }
-  assert.equal(status, "destroyed");
-  assert.equal((await runtime.listManaged()).some((c) => c.handle === handle), false);
+  await service.reap();
+  assert.equal(service.get(box.id).status, "ready");
+  assert.equal((await runtime.listManaged()).find((c) => c.handle === box.handle)?.running, true);
 });
 
 test("S3: PID 1 reaps orphaned processes, so a long session does not fill the pids limit with zombies", async () => {

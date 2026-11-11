@@ -151,6 +151,8 @@ export class GvisorDockerRuntime implements SandboxRuntime {
         MemorySwap: (limits.memoryMb + limits.diskMb) * MB, // equal to Memory means no swap
         NanoCpus: Math.round(limits.cpus * 1e9),
         PidsLimit: limits.pids,
+        // gVisor does not apply the cgroup PidsLimit to processes inside the sandbox, so RLIMIT_NPROC is what caps them.
+        Ulimits: [{ Name: "nproc", Soft: limits.pids, Hard: limits.pids }],
         ReadonlyRootfs: true, // S4: read-only root ...
         Tmpfs: {
           // ... plus size-limited writable tmpfs for the workspace and /tmp. Docker mounts tmpfs noexec unless told
