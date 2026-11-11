@@ -330,6 +330,23 @@ test("S3: a command past the memory cap takes the whole sandbox down; the reaper
   assert.equal((await runtime.listManaged()).some((c) => c.handle === handle), false);
 });
 
+test("S3: a fork bomb takes down only its own sandbox: the host and other sandboxes go on, and the reaper closes the record", async () => {
+  const box = await service.create();
+  const handle = box.handle;
+  // Under gVisor the pids limit ends the whole sandbox, the same way the memory cap does; the host never sees the processes.
+  const r = await service.exec(box.id, { cmd: ["sh", "-c", "bomb() { bomb | bomb & }; bomb; sleep 30"], timeoutMs: 20_000 });
+  assert.notEqual(r.exitCode, 0);
+  assert.equal((await run(["echo", "still here"])).stdout.trim(), "still here");
+  let status = service.get(box.id).status;
+  for (let i = 0; i < 50 && status !== "destroyed"; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await service.reap();
+    status = service.get(box.id).status;
+  }
+  assert.equal(status, "destroyed");
+  assert.equal((await runtime.listManaged()).some((c) => c.handle === handle), false);
+});
+
 test("S3: PID 1 reaps orphaned processes, so a long session does not fill the pids limit with zombies", async () => {
   // Each subshell exits at once and leaves its sleep to PID 1; a sleeping PID 1 would keep all 20 as zombies.
   const r = await run(["sh", "-c", "for i in $(seq 20); do ( sleep 0.1 & ); done; sleep 1.5; grep -l '^State:.Z' /proc/[0-9]*/status | wc -l"]);
