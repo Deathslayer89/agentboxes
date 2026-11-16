@@ -1,5 +1,8 @@
 // TypeScript client for an agentbox server. Node 20+, no dependencies: it only uses the global fetch and the system tar.
 import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -258,13 +261,26 @@ export class Sandbox {
     await this.uploadTar(new Uint8Array(stdout), dir);
   }
 
-  // Writes a sandbox directory's contents into a local directory, refusing archive members that would leave it.
+  // Writes a sandbox directory's contents into a local directory, refusing any member that is a link or that would leave the directory.
   async downloadDirectory(dir: string, localDir: string): Promise<void> {
     const tar = Buffer.from(await this.downloadTar(dir));
-    const listing = await run("tar", ["-t"], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, input: tar } as never);
-    const unsafe = String(listing.stdout).split("\n").filter((m) => m !== "" && (m.startsWith("/") || m.split("/").includes("..")));
-    if (unsafe.length > 0) throw new Error(`archive from the sandbox has unsafe paths: ${unsafe.slice(0, 3).join(", ")}`);
-    await run("tar", ["-x", "-C", localDir], { encoding: "buffer", maxBuffer: 1024 * 1024, input: tar } as never);
+    const tmp = await mkdtemp(join(tmpdir(), "agentbox-"));
+    const archive = join(tmp, "archive.tar");
+    try {
+      await writeFile(archive, tar);
+      const names = String((await run("tar", ["-tf", archive], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })).stdout);
+      for (const name of names.split("\n")) {
+        if (name !== "" && (name.startsWith("/") || name.split("/").includes(".."))) throw new Error(`archive from the sandbox has an unsafe path: ${name}`);
+      }
+      const verbose = String((await run("tar", ["-tvf", archive], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })).stdout);
+      for (const line of verbose.split("\n")) {
+        if (line !== "" && line[0] !== "-" && line[0] !== "d") throw new Error(`archive from the sandbox has a link or special member: ${line}`);
+      }
+      await mkdir(localDir, { recursive: true });
+      await run("tar", ["-xf", archive, "-C", localDir], { maxBuffer: 1024 * 1024 });
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
   }
 
   // Outbound requests the proxy refused, with the allowlist in force.

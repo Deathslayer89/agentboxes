@@ -70,6 +70,18 @@ class ClientTest(unittest.TestCase):
         finally:
             box.destroy()
 
+    def test_download_directory_refuses_a_symlink_out_of_the_folder(self):
+        box = self.client.create()
+        try:
+            with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as out:
+                os.symlink(out, os.path.join(src, "link"))
+                box.upload_directory(src, "escape")
+                with self.assertRaises(AgentboxError) as caught:
+                    box.download_directory("escape", out)
+                self.assertEqual(caught.exception.code, "UnsafeArchive")
+        finally:
+            box.destroy()
+
     def test_typed_errors(self):
         with self.assertRaises(SandboxNotFound):
             self.client.get("sbx_nope")

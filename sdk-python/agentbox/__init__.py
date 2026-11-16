@@ -202,9 +202,14 @@ class Sandbox:
 
     # Writes a sandbox directory's contents into a local directory, refusing members that would leave it.
     def download_directory(self, directory: str, local_dir: str) -> None:
+        base = os.path.realpath(local_dir)
+        os.makedirs(base, exist_ok=True)
         with tarfile.open(fileobj=io.BytesIO(self.download_tar(directory)), mode="r") as archive:
             for member in archive.getmembers():
-                if member.name.startswith("/") or ".." in member.name.split("/"):
+                if member.issym() or member.islnk() or member.isdev():
+                    raise AgentboxError(f"archive from the sandbox has a link or device member: {member.name}", 0, "UnsafeArchive")
+                target = os.path.realpath(os.path.join(base, member.name))
+                if target != base and not target.startswith(base + os.sep):
                     raise AgentboxError(f"archive from the sandbox has an unsafe path: {member.name}", 0, "UnsafeArchive")
             archive.extractall(local_dir)
 

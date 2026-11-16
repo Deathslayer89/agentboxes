@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test, { after, before } from "node:test";
 import { serve, type ServerType } from "@hono/node-server";
 import { Agentbox, AgentboxError, ExecTimeout, PoolExhausted, SandboxNotFound, type ExecEvent } from "../../../sdk/src/index.js";
@@ -91,6 +94,29 @@ test("create, exec, files, stream, destroy", async () => {
   ]);
   assert.equal((await agentbox.stats()).sandboxes.live, 0);
   assert.equal((await agentbox.list()).length, 0);
+});
+
+test("downloadDirectory extracts a plain archive and refuses one that carries a symlink out of the folder", async () => {
+  const box = await agentbox.create();
+  const work = await mkdtemp(join(tmpdir(), "agentbox-sdk-"));
+  try {
+    const plain = join(work, "plain");
+    await mkdir(plain, { recursive: true });
+    await writeFile(join(plain, "a.txt"), "alpha");
+    await box.uploadDirectory(plain, "plain");
+    const out = join(work, "out");
+    await box.downloadDirectory("plain", out);
+    assert.deepEqual(await readdir(out), ["a.txt"]);
+
+    const escape = join(work, "escape");
+    await mkdir(escape, { recursive: true });
+    await symlink(work, join(escape, "link"));
+    await box.uploadDirectory(escape, "escape");
+    await assert.rejects(box.downloadDirectory("escape", join(work, "out2")), /link or special member/);
+  } finally {
+    await rm(work, { recursive: true, force: true });
+    await box.destroy();
+  }
 });
 
 test("typed errors: not found, pool exhausted, exec timeout, wrong key, validation", async () => {
