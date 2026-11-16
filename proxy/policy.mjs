@@ -41,6 +41,8 @@ function splitRule(rule) {
 /**
  * Loopback, link-local (cloud metadata lives at 169.254.169.254), private, carrier-grade NAT,
  * multicast and reserved ranges are never reachable through the proxy, whatever the allowlist says.
+ * For IPv6 only global unicast (2000::/3) can be public, minus the documentation block; any address
+ * that carries an IPv4 one (mapped, compatible, NAT64, 6to4 or Teredo) is judged by that IPv4.
  */
 export function isPublicAddress(ip) {
   const version = isIP(ip);
@@ -48,16 +50,22 @@ export function isPublicAddress(ip) {
   if (version !== 6) return false;
   const bytes = v6Bytes(ip.toLowerCase());
   if (bytes === null) return false;
-  const firstTenZero = bytes.slice(0, 10).every((b) => b === 0);
-  // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible (::a.b.c.d) carry a v4 address in the low four bytes, in any spelling; judge that v4.
-  if (firstTenZero && ((bytes[10] === 0xff && bytes[11] === 0xff) || (bytes[10] === 0 && bytes[11] === 0))) {
-    return isPublicV4(`${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`);
-  }
-  const first = (bytes[0] << 8) | bytes[1];
-  const uniqueLocal = (first & 0xfe00) === 0xfc00;
-  const linkLocal = (first & 0xffc0) === 0xfe80;
-  const multicast = (first & 0xff00) === 0xff00;
-  return !(uniqueLocal || linkLocal || multicast);
+  const embedded = embeddedV4(bytes);
+  if (embedded !== null) return isPublicV4(embedded);
+  if ((bytes[0] & 0xe0) !== 0x20) return false; // not global unicast 2000::/3
+  if (bytes[0] === 0x20 && bytes[1] === 0x01 && bytes[2] === 0x0d && bytes[3] === 0xb8) return false; // 2001:db8::/32 documentation
+  return true;
+}
+
+// The IPv4 address an IPv6 address carries, or null when it carries none.
+function embeddedV4(b) {
+  const v4 = (i) => `${b[i]}.${b[i + 1]}.${b[i + 2]}.${b[i + 3]}`;
+  const zero = (from, to) => b.slice(from, to).every((x) => x === 0);
+  if (zero(0, 10) && ((b[10] === 0xff && b[11] === 0xff) || (b[10] === 0 && b[11] === 0))) return v4(12); // ::ffff:a.b.c.d mapped and ::a.b.c.d compatible
+  if (b[0] === 0x00 && b[1] === 0x64 && b[2] === 0xff && b[3] === 0x9b && zero(4, 12)) return v4(12); // 64:ff9b::/96 NAT64
+  if (b[0] === 0x20 && b[1] === 0x02) return v4(2); // 2002:a.b.c.d::/16 6to4
+  if (b[0] === 0x20 && b[1] === 0x01 && b[2] === 0x00 && b[3] === 0x00) return `${255 - b[12]}.${255 - b[13]}.${255 - b[14]}.${255 - b[15]}`; // 2001:0000::/32 Teredo, client v4 is the last four bytes inverted
+  return null;
 }
 
 // The 16 bytes of an IPv6 address, expanding one "::" and a trailing dotted-quad; null if it does not parse.
@@ -95,12 +103,16 @@ function v6Bytes(ip) {
 }
 
 function isPublicV4(ip) {
-  const [a, b] = ip.split(".").map(Number);
-  if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
-  if (a === 100 && b >= 64 && b <= 127) return false;
-  if (a === 169 && b === 254) return false;
-  if (a === 172 && b >= 16 && b <= 31) return false;
-  if (a === 192 && b === 168) return false;
+  const [a, b, c] = ip.split(".").map(Number);
+  if (a === 0 || a === 10 || a === 127 || a >= 224) return false; // this host, private, loopback, multicast and reserved
+  if (a === 100 && b >= 64 && b <= 127) return false; // carrier-grade NAT
+  if (a === 169 && b === 254) return false; // link-local, which includes the 169.254.169.254 metadata address
+  if (a === 172 && b >= 16 && b <= 31) return false; // private
+  if (a === 192 && b === 168) return false; // private
+  if (a === 192 && b === 0 && (c === 0 || c === 2)) return false; // IETF protocol assignments and TEST-NET-1
+  if (a === 198 && (b === 18 || b === 19)) return false; // benchmarking
+  if (a === 198 && b === 51 && c === 100) return false; // TEST-NET-2
+  if (a === 203 && b === 0 && c === 113) return false; // TEST-NET-3
   return true;
 }
 

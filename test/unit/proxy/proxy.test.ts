@@ -180,13 +180,21 @@ test("loopback, private and metadata addresses are refused even when allowlisted
   }
 });
 
-test("isPublicAddress treats an IPv4-mapped IPv6 address as its v4, in every spelling", () => {
-  for (const ip of ["::ffff:127.0.0.1", "::ffff:7f00:1", "::ffff:169.254.169.254", "::ffff:a9fe:a9fe", "0:0:0:0:0:ffff:a9fe:a9fe", "::ffff:10.0.0.1", "::ffff:0a00:0001", "::7f00:1", "::1", "::", "fe80::1", "fc00::1", "ff02::1"]) {
-    assert.equal(isPublicAddress(ip), false, ip);
-  }
-  for (const ip of ["::ffff:8.8.8.8", "::ffff:0808:0808", "2606:4700:4700::1111"]) {
+test("isPublicAddress judges the IPv4 an IPv6 address carries, and only global unicast is otherwise public", () => {
+  const privateForms = [
+    "::ffff:127.0.0.1", "::ffff:7f00:1", "::ffff:169.254.169.254", "::ffff:a9fe:a9fe", "0:0:0:0:0:ffff:a9fe:a9fe", "::ffff:10.0.0.1", "::ffff:0a00:0001", "::7f00:1",
+    "::1", "::", "fe80::1", "fc00::1", "ff02::1",
+    "64:ff9b::7f00:1", "64:ff9b::127.0.0.1", "2002:7f00:1::", "2002:a9fe:a9fe::", "2001:0:0:0:0:0:8080:807f", "2001:db8::1",
+  ];
+  for (const ip of privateForms) assert.equal(isPublicAddress(ip), false, ip);
+  for (const ip of ["::ffff:8.8.8.8", "::ffff:0808:0808", "2606:4700:4700::1111", "64:ff9b::8.8.8.8", "2002:808:808::", "2001:db9::1"]) {
     assert.equal(isPublicAddress(ip), true, ip);
   }
+});
+
+test("isPublicAddress refuses the IPv4 benchmarking and documentation ranges", () => {
+  for (const ip of ["198.18.0.1", "198.19.255.1", "192.0.0.1", "192.0.2.5", "198.51.100.7", "203.0.113.9"]) assert.equal(isPublicAddress(ip), false, ip);
+  for (const ip of ["192.0.1.1", "198.20.0.1", "203.0.114.1", "8.8.8.8"]) assert.equal(isPublicAddress(ip), true, ip);
 });
 
 test("a mapped-IPv6 literal for a private address is refused even when allowlisted", async () => {
