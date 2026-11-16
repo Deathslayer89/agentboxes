@@ -46,14 +46,52 @@ export function isPublicAddress(ip) {
   const version = isIP(ip);
   if (version === 4) return isPublicV4(ip);
   if (version !== 6) return false;
-  const lower = ip.toLowerCase();
-  if (lower.startsWith("::ffff:")) return isPublicV4(lower.slice(7));
-  if (lower === "::1" || lower === "::") return false;
-  const first = parseInt(lower.split(":")[0] || "0", 16);
+  const bytes = v6Bytes(ip.toLowerCase());
+  if (bytes === null) return false;
+  const firstTenZero = bytes.slice(0, 10).every((b) => b === 0);
+  // IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible (::a.b.c.d) carry a v4 address in the low four bytes, in any spelling; judge that v4.
+  if (firstTenZero && ((bytes[10] === 0xff && bytes[11] === 0xff) || (bytes[10] === 0 && bytes[11] === 0))) {
+    return isPublicV4(`${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`);
+  }
+  const first = (bytes[0] << 8) | bytes[1];
   const uniqueLocal = (first & 0xfe00) === 0xfc00;
   const linkLocal = (first & 0xffc0) === 0xfe80;
   const multicast = (first & 0xff00) === 0xff00;
   return !(uniqueLocal || linkLocal || multicast);
+}
+
+// The 16 bytes of an IPv6 address, expanding one "::" and a trailing dotted-quad; null if it does not parse.
+function v6Bytes(ip) {
+  const halves = ip.split("::");
+  if (halves.length > 2) return null;
+  const toWords = (part) => {
+    if (part === "") return [];
+    const groups = part.split(":");
+    const words = [];
+    for (let i = 0; i < groups.length; i++) {
+      const g = groups[i];
+      if (g.includes(".")) {
+        if (i !== groups.length - 1) return null;
+        const quad = g.split(".").map(Number);
+        if (quad.length !== 4 || quad.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+        words.push((quad[0] << 8) | quad[1], (quad[2] << 8) | quad[3]);
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+        words.push(parseInt(g, 16));
+      }
+    }
+    return words;
+  };
+  const head = toWords(halves[0]);
+  const tail = halves.length === 2 ? toWords(halves[1]) : [];
+  if (head === null || tail === null) return null;
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 2 ? missing < 1 : missing !== 0) return null;
+  const words = [...head, ...new Array(halves.length === 2 ? missing : 0).fill(0), ...tail];
+  if (words.length !== 8) return null;
+  const bytes = [];
+  for (const w of words) bytes.push((w >> 8) & 0xff, w & 0xff);
+  return bytes;
 }
 
 function isPublicV4(ip) {

@@ -6,7 +6,7 @@ import type net from "node:net";
 import tls from "node:tls";
 import test, { after, before } from "node:test";
 import { createCa, issueCert } from "../../../proxy/certs.mjs";
-import { inSubnet } from "../../../proxy/policy.mjs";
+import { inSubnet, isPublicAddress } from "../../../proxy/policy.mjs";
 import { startProxy } from "../../../proxy/server.mjs";
 
 // The proxy on loopback with allowPrivateTargets, so a local echo server can stand in for the internet.
@@ -175,6 +175,29 @@ test("loopback, private and metadata addresses are refused even when allowlisted
     const log = (await (await control(strict, "GET", "/policies/s/log")).json()) as { denied: Array<{ reason: string }> };
     assert.equal(log.denied.length, 4);
     assert.ok(log.denied.every((entry) => entry.reason.includes("private address")), JSON.stringify(log.denied));
+  } finally {
+    await strict.close();
+  }
+});
+
+test("isPublicAddress treats an IPv4-mapped IPv6 address as its v4, in every spelling", () => {
+  for (const ip of ["::ffff:127.0.0.1", "::ffff:7f00:1", "::ffff:169.254.169.254", "::ffff:a9fe:a9fe", "0:0:0:0:0:ffff:a9fe:a9fe", "::ffff:10.0.0.1", "::ffff:0a00:0001", "::7f00:1", "::1", "::", "fe80::1", "fc00::1", "ff02::1"]) {
+    assert.equal(isPublicAddress(ip), false, ip);
+  }
+  for (const ip of ["::ffff:8.8.8.8", "::ffff:0808:0808", "2606:4700:4700::1111"]) {
+    assert.equal(isPublicAddress(ip), true, ip);
+  }
+});
+
+test("a mapped-IPv6 literal for a private address is refused even when allowlisted", async () => {
+  const strict = await startProxy({ adminToken: "adm", host: "127.0.0.1" });
+  try {
+    await control(strict, "PUT", "/policies/s", { token: "t", allowHosts: ["::ffff:7f00:1", "::ffff:a9fe:a9fe"] });
+    for (const target of ["[::ffff:7f00:1]:80", "[::ffff:a9fe:a9fe]:80"]) {
+      const { status, socket } = await connectTunnel(strict, target, { "proxy-authorization": basic("s", "t") });
+      socket.destroy();
+      assert.equal(status, 403, target);
+    }
   } finally {
     await strict.close();
   }
