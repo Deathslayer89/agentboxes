@@ -211,6 +211,7 @@ class Sandbox:
                 target = os.path.realpath(os.path.join(base, member.name))
                 if target != base and not target.startswith(base + os.sep):
                     raise AgentboxError(f"archive from the sandbox has an unsafe path: {member.name}", 0, "UnsafeArchive")
+                member.mode &= 0o777  # drop setuid, setgid and sticky bits so an extracted file cannot carry them
             archive.extractall(local_dir)
 
     def egress_log(self) -> Dict[str, Any]:

@@ -82,6 +82,27 @@ class ClientTest(unittest.TestCase):
         finally:
             box.destroy()
 
+    def test_download_directory_strips_setuid_bits(self):
+        import io
+        import stat
+        import tarfile
+
+        box = self.client.create()
+        try:
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as archive:
+                info = tarfile.TarInfo("tool")
+                info.size = 2
+                info.mode = 0o4755
+                archive.addfile(info, io.BytesIO(b"hi"))
+            box.upload_tar(buf.getvalue(), "proj")
+            with tempfile.TemporaryDirectory() as out:
+                box.download_directory("proj", out)
+                mode = os.stat(os.path.join(out, "tool")).st_mode
+                self.assertFalse(mode & stat.S_ISUID)
+        finally:
+            box.destroy()
+
     def test_typed_errors(self):
         with self.assertRaises(SandboxNotFound):
             self.client.get("sbx_nope")
