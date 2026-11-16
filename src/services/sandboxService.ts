@@ -121,19 +121,16 @@ export class SandboxService {
   }
 
   /**
-   * Turns allowHosts and secrets into what the proxy enforces. Secret values come from the
-   * server's environment and go only to the proxy; the record keeps host names alone.
+   * Turns allowHosts and the requested secret hosts into what the proxy enforces. Each requested host must have
+   * a binding in the server's AGENTBOX_SECRETS; the resolved value goes only to the proxy, never onto the record.
    */
   private egressFor(request: CreateSandboxRequest): { policy: EgressPolicy; network: SandboxNetwork } | undefined {
     if (request.allowHosts === undefined && request.secrets === undefined) return undefined;
     const secrets: Record<string, SecretHeader> = {};
-    for (const [host, raw] of Object.entries(request.secrets ?? {})) {
-      const spec = typeof raw === "string" ? { env: raw } : raw;
-      const value = this.config.secretsEnv[spec.env];
-      if (value === undefined || value === "") throw new ValidationError(`secret for ${host}: ${spec.env} is not set in the server's environment`);
-      const header = spec.header ?? "Authorization";
-      const prefix = spec.prefix ?? (header.toLowerCase() === "authorization" ? "Bearer " : "");
-      secrets[host] = { header, value: prefix + value };
+    for (const host of request.secrets ?? []) {
+      const secret = this.config.secrets[host];
+      if (secret === undefined) throw new ValidationError(`no secret is configured for ${host}; set it in AGENTBOX_SECRETS on the server`);
+      secrets[host] = secret;
     }
     // A host with a secret is allowed on 80 and 443 without listing it twice.
     const allowHosts = [...new Set([...(request.allowHosts ?? []), ...Object.keys(secrets)])];

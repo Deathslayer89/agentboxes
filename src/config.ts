@@ -1,6 +1,10 @@
 import type { ApiKey } from "./models/apiKey.js";
-import type { SandboxLimits } from "./models/sandbox.js";
+import type { SandboxLimits, SecretSpec } from "./models/sandbox.js";
 import { DEFAULT_TEMPLATE, isValidTemplateName } from "./models/template.js";
+import type { SecretHeader } from "./runtime/sandboxRuntime.js";
+
+// Headers the proxy owns; a configured secret may not be sent in one of these.
+const RESERVED_HEADERS = new Set(["host", "content-length", "transfer-encoding", "connection", "proxy-authorization"]);
 
 export interface Config {
   port: number;
@@ -29,8 +33,8 @@ export interface Config {
   // Warm pool size per template, for example { default: 3, "data-science": 2 }. 0 turns a pool off.
   poolSizes: Record<string, number>;
   reaperIntervalMs: number;
-  // Where `secrets: { host: ENV_NAME }` values are read from. Never passed into a sandbox.
-  secretsEnv: NodeJS.ProcessEnv;
+  // Secret bindings the proxy may inject, by host, resolved at load from AGENTBOX_SECRETS and the named environment variables. A create request names hosts from this map; it cannot name an arbitrary variable.
+  secrets: Record<string, SecretHeader>;
   // SQLite file for sandbox records and settings, so they survive a server restart.
   dbPath: string;
 }
@@ -77,7 +81,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxSandboxes: num("MAX_SANDBOXES", 20),
     poolSizes: parsePoolSizes(env.POOL_SIZES),
     reaperIntervalMs: num("REAPER_INTERVAL_MS", 10_000),
-    secretsEnv: env,
+    secrets: parseSecrets(env),
     dbPath: env.AGENTBOX_DB || "data/agentbox.db",
   };
 
@@ -139,4 +143,35 @@ export function parsePoolSizes(raw: string | undefined): Record<string, number> 
     sizes[name] = size;
   }
   return sizes;
+}
+
+/**
+ * Resolves AGENTBOX_SECRETS, a JSON object of host to secret, into the header and value the proxy sends.
+ * A secret is `"ENV_NAME"` (sent as `Authorization: Bearer <value>`) or `{ env, header?, prefix? }`. The value
+ * is read from the named environment variable at load, so only the operator decides which variable goes to which host.
+ */
+function parseSecrets(env: NodeJS.ProcessEnv): Record<string, SecretHeader> {
+  const raw = env.AGENTBOX_SECRETS;
+  if (raw === undefined || raw === "") return {};
+  let spec: unknown;
+  try {
+    spec = JSON.parse(raw);
+  } catch {
+    throw new Error('AGENTBOX_SECRETS must be JSON, for example {"api.openai.com":"OPENAI_API_KEY"}');
+  }
+  if (typeof spec !== "object" || spec === null || Array.isArray(spec)) {
+    throw new Error("AGENTBOX_SECRETS must be a JSON object of host to secret");
+  }
+  const secrets: Record<string, SecretHeader> = {};
+  for (const [host, entry] of Object.entries(spec as Record<string, unknown>)) {
+    const def: SecretSpec = typeof entry === "string" ? { env: entry } : (entry as SecretSpec);
+    if (typeof def.env !== "string" || def.env === "") throw new Error(`AGENTBOX_SECRETS: ${host} must name an environment variable`);
+    const value = env[def.env];
+    if (value === undefined || value === "") throw new Error(`AGENTBOX_SECRETS: ${def.env} for ${host} is not set in the environment`);
+    const header = typeof def.header === "string" ? def.header : "Authorization";
+    if (RESERVED_HEADERS.has(header.toLowerCase())) throw new Error(`AGENTBOX_SECRETS: ${host} may not use the ${header} header`);
+    const prefix = typeof def.prefix === "string" ? def.prefix : header.toLowerCase() === "authorization" ? "Bearer " : "";
+    secrets[host.toLowerCase()] = { header, value: prefix + value };
+  }
+  return secrets;
 }

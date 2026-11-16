@@ -198,10 +198,14 @@ test("a template picks its image and its own pool; an unknown template is refuse
   ]);
 });
 
-test("allowHosts and secrets become an egress policy; the value comes from the server env and never touches the record", async () => {
-  const { service, runtime, pools } = makeService({ POOL_SIZES: "default:1", OPENAI_API_KEY: "sk-test" });
+test("allowHosts and secrets become an egress policy; the value comes from the server config and never touches the record", async () => {
+  const { service, runtime, pools } = makeService({
+    POOL_SIZES: "default:1",
+    OPENAI_API_KEY: "sk-test",
+    AGENTBOX_SECRETS: '{"api.openai.com":"OPENAI_API_KEY","api.anthropic.com":{"env":"OPENAI_API_KEY","header":"x-api-key"}}',
+  });
   await pools.fill();
-  const box = await service.create({ allowHosts: ["pypi.org"], secrets: { "api.openai.com": "OPENAI_API_KEY", "api.anthropic.com": { env: "OPENAI_API_KEY", header: "x-api-key" } } });
+  const box = await service.create({ allowHosts: ["pypi.org"], secrets: ["api.openai.com", "api.anthropic.com"] });
   assert.equal(box.startup.source, "cold", "a sandbox with a network never comes from the pool");
   assert.deepEqual(box.network, { allowHosts: ["pypi.org", "api.openai.com", "api.anthropic.com"], secretHosts: ["api.openai.com", "api.anthropic.com"] });
   assert.deepEqual(runtime.containers.get(box.handle ?? "")?.egress, {
@@ -209,7 +213,7 @@ test("allowHosts and secrets become an egress policy; the value comes from the s
     secrets: { "api.openai.com": { header: "Authorization", value: "Bearer sk-test" }, "api.anthropic.com": { header: "x-api-key", value: "sk-test" } },
   });
   assert.equal(JSON.stringify(box).includes("sk-test"), false);
-  await assert.rejects(service.create({ secrets: { "api.openai.com": "MISSING_KEY" } }), /MISSING_KEY is not set/);
+  await assert.rejects(service.create({ secrets: ["api.unconfigured.com"] }), /no secret is configured for api.unconfigured.com/);
   const plain = await service.create();
   assert.equal(plain.network, undefined);
   assert.equal(runtime.containers.get(plain.handle ?? "")?.egress, undefined);

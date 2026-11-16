@@ -1,16 +1,11 @@
 import { isIP } from "node:net";
 import { ValidationError } from "../errors.js";
-import type { CreateSandboxRequest, ExecRequest, SecretSpec } from "../models/sandbox.js";
+import type { CreateSandboxRequest, ExecRequest } from "../models/sandbox.js";
 import { isValidTemplateName } from "../models/template.js";
 
 // A DNS name, optionally starting with "*." for subdomains, or an IP literal.
 const HOST = /^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
-const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
 const SHELL_VAR = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const HEADER_NAME = /^[A-Za-z0-9-]{1,64}$/;
-// Headers the proxy itself owns; a secret may not be sent in one of these.
-const RESERVED_HEADERS = new Set(["host", "content-length", "transfer-encoding", "connection", "proxy-authorization"]);
-const PREFIX = /^[\x20-\x7e]{0,64}$/;
 const MAX_ENV = 100;
 const MAX_HOSTS = 100;
 
@@ -25,16 +20,6 @@ function parseHostRule(value: unknown): string | undefined {
   if (match === null || isIP(value) === 6) return isHost(value, true) ? value.toLowerCase() : undefined;
   const port = Number(match[2]);
   return isHost(match[1], true) && port >= 1 && port <= 65535 ? `${match[1].toLowerCase()}:${port}` : undefined;
-}
-
-// A bare environment variable name, or { env, header?, prefix? }.
-function isSecretSpec(value: unknown): value is string | SecretSpec {
-  if (typeof value === "string") return ENV_NAME.test(value);
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const { env, header, prefix } = value as Record<string, unknown>;
-  if (typeof env !== "string" || !ENV_NAME.test(env)) return false;
-  if (header !== undefined && (typeof header !== "string" || !HEADER_NAME.test(header) || RESERVED_HEADERS.has(header.toLowerCase()))) return false;
-  return prefix === undefined || (typeof prefix === "string" && PREFIX.test(prefix));
 }
 
 // Shape checks for untrusted JSON bodies. Policy checks (server maximums) live in SandboxService.
@@ -79,12 +64,10 @@ export function parseCreateRequest(body: unknown): CreateSandboxRequest {
   }
   if (obj.secrets !== undefined) {
     const secrets = obj.secrets;
-    if (typeof secrets !== "object" || secrets === null || Array.isArray(secrets)) throw new ValidationError("secrets must be an object of host to secret");
-    const entries = Object.entries(secrets as Record<string, unknown>);
-    if (entries.length > MAX_HOSTS || !entries.every(([host, spec]) => isHost(host, false) && isSecretSpec(spec))) {
-      throw new ValidationError('secrets must map host names to environment variable names, for example { "api.openai.com": "OPENAI_API_KEY" }, or to { "env": "ANTHROPIC_API_KEY", "header": "x-api-key" }');
+    if (!Array.isArray(secrets) || secrets.length > MAX_HOSTS || !secrets.every((host) => isHost(host, false))) {
+      throw new ValidationError('secrets must be an array of host names configured in the server\'s AGENTBOX_SECRETS, for example ["api.openai.com"]');
     }
-    req.secrets = Object.fromEntries(entries.map(([host, spec]) => [host.toLowerCase(), spec as string | SecretSpec]));
+    req.secrets = [...new Set(secrets.map((host) => (host as string).toLowerCase()))];
   }
   return req;
 }

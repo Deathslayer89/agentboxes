@@ -43,3 +43,23 @@ test("API keys: the single key is named default; the list adds named keys with o
     assert.throws(() => loadConfig({ AGENTBOX_API_KEYS: bad }), bad);
   }
 });
+
+test("AGENTBOX_SECRETS binds each secret to one host and resolves its value from the environment", () => {
+  assert.deepEqual(loadConfig({}).secrets, {});
+  const secrets = loadConfig({
+    OPENAI_API_KEY: "sk-openai",
+    ANTHROPIC_API_KEY: "sk-anthropic",
+    AGENTBOX_SECRETS: '{"API.openai.com":"OPENAI_API_KEY","api.anthropic.com":{"env":"ANTHROPIC_API_KEY","header":"x-api-key"}}',
+  }).secrets;
+  assert.deepEqual(secrets, {
+    "api.openai.com": { header: "Authorization", value: "Bearer sk-openai" },
+    "api.anthropic.com": { header: "x-api-key", value: "sk-anthropic" },
+  });
+});
+
+test("AGENTBOX_SECRETS is refused when its JSON, its variable or its header is wrong", () => {
+  assert.throws(() => loadConfig({ AGENTBOX_SECRETS: "not json" }), /must be JSON/);
+  assert.throws(() => loadConfig({ AGENTBOX_SECRETS: '["api.openai.com"]' }), /object of host to secret/);
+  assert.throws(() => loadConfig({ AGENTBOX_SECRETS: '{"api.openai.com":"MISSING_KEY"}' }), /MISSING_KEY for api.openai.com is not set/);
+  assert.throws(() => loadConfig({ KEY: "v", AGENTBOX_SECRETS: '{"api.openai.com":{"env":"KEY","header":"Host"}}' }), /may not use the Host header/);
+});

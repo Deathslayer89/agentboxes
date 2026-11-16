@@ -136,13 +136,13 @@ test("GET /stats reports live sandboxes and the pool", async () => {
 });
 
 test("egress log route and network in the view", async () => {
-  const { app } = makeApp({}, { OPENAI_API_KEY: "sk-test" });
-  const created = await app.request("/sandboxes", { method: "POST", body: JSON.stringify({ secrets: { "api.openai.com": "OPENAI_API_KEY" } }) });
+  const { app } = makeApp({}, { OPENAI_API_KEY: "sk-test", AGENTBOX_SECRETS: '{"api.openai.com":"OPENAI_API_KEY"}' });
+  const created = await app.request("/sandboxes", { method: "POST", body: JSON.stringify({ secrets: ["api.openai.com"] }) });
   assert.equal(created.status, 201);
   const body = (await created.json()) as { id: string; network: unknown };
   assert.deepEqual(body.network, { allowHosts: ["api.openai.com"], secretHosts: ["api.openai.com"] });
   assert.deepEqual(await (await app.request(`/sandboxes/${body.id}/egress-log`)).json(), { allowHosts: ["api.openai.com"], denied: [] });
-  assert.equal((await app.request("/sandboxes", { method: "POST", body: JSON.stringify({ secrets: { "api.openai.com": "NOPE" } }) })).status, 400);
+  assert.equal((await app.request("/sandboxes", { method: "POST", body: JSON.stringify({ secrets: ["api.unconfigured.com"] }) })).status, 400);
   assert.equal((await app.request("/sandboxes", { method: "POST", body: JSON.stringify({ allowHosts: ["bad host"] }) })).status, 400);
 });
 

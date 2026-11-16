@@ -125,12 +125,13 @@ A sandbox has no network unless you list hosts when you create it:
 
 ```bash
 curl -s -X POST localhost:7788/sandboxes -d '{"allowHosts":["pypi.org","files.pythonhosted.org"]}'
-curl -s -X POST localhost:7788/sandboxes -d '{"secrets":{"api.openai.com":"OPENAI_API_KEY"}}'
+# with AGENTBOX_SECRETS='{"api.openai.com":"OPENAI_API_KEY"}' set on the server:
+curl -s -X POST localhost:7788/sandboxes -d '{"secrets":["api.openai.com"]}'
 ```
 
 With `allowHosts`, the sandbox gets its own network where the only thing it can reach is an egress proxy. The proxy allows those hosts on ports 80 and 443 (write `host:port` for another port) and refuses everything else. Refusals are logged at `GET /sandboxes/:id/egress-log`. An allowed hostname that resolves to localhost, the cloud metadata address or a private IP is refused too.
 
-With `secrets`, the server reads `OPENAI_API_KEY` from its own environment and hands it only to the proxy, which adds the header to outgoing requests. The sandbox never sees the key. There's a test that searches the sandbox's environment and files for it and checks it isn't there.
+You declare secrets on the server with `AGENTBOX_SECRETS`, binding each host to one environment variable. A create request names which of those hosts it wants with `secrets`, and the server hands the value only to the proxy, which adds the header to outgoing requests. The sandbox never sees the key, and a request cannot name a variable or a host you did not configure. There's a test that searches the sandbox's environment and files for the value and checks it isn't there.
 
 More detail, including custom headers like `x-api-key` and which tools respect the proxy, is in [docs/network.md](docs/network.md).
 

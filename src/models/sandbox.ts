@@ -47,8 +47,9 @@ export interface Sandbox {
 }
 
 /**
- * How the proxy sends one secret: the header (default Authorization) and what goes before the
- * value (default "Bearer " for Authorization, nothing for any other header).
+ * One entry in the server's AGENTBOX_SECRETS: the environment variable holding the value, the header the
+ * proxy sends it in (default Authorization) and what goes before the value (default "Bearer " for
+ * Authorization, nothing for any other header). Set by the operator, never by a create request.
  */
 export interface SecretSpec {
   env: string;
@@ -60,8 +61,8 @@ export type CreateSandboxRequest = Partial<SandboxLimits> & {
   template?: string;
   // Rules the sandbox may reach through the egress proxy: "pypi.org" (ports 80 and 443), "db.example.com:5432", "*.example.com".
   allowHosts?: string[];
-  // host -> the server environment variable holding the secret; a bare name means "Authorization: Bearer <value>".
-  secrets?: Record<string, string | SecretSpec>;
+  // Hosts, from the server's AGENTBOX_SECRETS, whose secret the proxy should inject for this sandbox.
+  secrets?: string[];
 };
 
 export interface ExecRequest {

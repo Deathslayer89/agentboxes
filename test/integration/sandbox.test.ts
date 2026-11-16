@@ -229,9 +229,9 @@ test("N1/N2/N3: an allowlisted sandbox reaches only the listed hosts; refusals a
 });
 
 test("K1: the proxy adds the secret for its host, and the secret is nowhere inside the sandbox", async () => {
-  const secretConfig = loadConfig({ ...process.env, DEFAULT_TTL_SECONDS: "120", TEST_API_KEY: "hunter2-never-inside" });
+  const secretConfig = loadConfig({ ...process.env, DEFAULT_TTL_SECONDS: "120", TEST_API_KEY: "hunter2-never-inside", AGENTBOX_SECRETS: '{"httpbin.org":"TEST_API_KEY"}' });
   const withSecret = new SandboxService(new InMemorySandboxRepository(), templates, runtime, secretConfig, new SystemClock(), new RandomIdGenerator("sbxsec_"), new WarmPools());
-  const box = await withSecret.create({ secrets: { "httpbin.org": "TEST_API_KEY" } });
+  const box = await withSecret.create({ secrets: ["httpbin.org"] });
   try {
     assert.deepEqual(box.network, { allowHosts: ["httpbin.org"], secretHosts: ["httpbin.org"] });
     const script = `import urllib.request

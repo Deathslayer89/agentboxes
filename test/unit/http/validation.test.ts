@@ -39,14 +39,11 @@ test("create request: allowHosts and secrets are checked and lowercased", () => 
     parseCreateRequest({ allowHosts: ["PyPI.org", "*.example.com", "10.0.0.1", "DB.example.com:5432", "10.0.0.2:8080", "::1"] }),
     { allowHosts: ["pypi.org", "*.example.com", "10.0.0.1", "db.example.com:5432", "10.0.0.2:8080", "::1"] },
   );
-  assert.deepEqual(parseCreateRequest({ secrets: { "API.openai.com": "OPENAI_API_KEY" } }), { secrets: { "api.openai.com": "OPENAI_API_KEY" } });
-  const spec = { env: "ANTHROPIC_API_KEY", header: "x-api-key", prefix: "" };
-  assert.deepEqual(parseCreateRequest({ secrets: { "api.anthropic.com": spec } }), { secrets: { "api.anthropic.com": spec } });
+  assert.deepEqual(parseCreateRequest({ secrets: ["API.openai.com", "api.openai.com"] }), { secrets: ["api.openai.com"] });
   for (const bad of [{ allowHosts: "pypi.org" }, { allowHosts: ["not a host"] }, { allowHosts: ["http://pypi.org"] }, { allowHosts: [1] }, { allowHosts: ["pypi.org:0"] }, { allowHosts: ["pypi.org:70000"] }, { allowHosts: ["[::1]:443"] }]) {
     assert.throws(() => parseCreateRequest(bad), ValidationError, JSON.stringify(bad));
   }
-  const badSpecs = [{ header: "x-api-key" }, { env: "lower" }, { env: "KEY", header: "Host" }, { env: "KEY", header: "not a header" }, { env: "KEY", prefix: "a\r\nb" }, { env: "KEY", prefix: "x".repeat(65) }];
-  for (const bad of [{ secrets: [] }, { secrets: { "*.openai.com": "KEY" } }, { secrets: { "api.openai.com": "lowercase" } }, { secrets: { "api.openai.com": 1 } }, ...badSpecs.map((s) => ({ secrets: { "api.openai.com": s } }))]) {
+  for (const bad of [{ secrets: {} }, { secrets: "api.openai.com" }, { secrets: ["*.openai.com"] }, { secrets: ["not a host"] }, { secrets: [1] }]) {
     assert.throws(() => parseCreateRequest(bad), ValidationError, JSON.stringify(bad));
   }
 });
