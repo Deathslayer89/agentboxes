@@ -279,6 +279,53 @@ test("extend moves the expiry forward from now, within the maximum, and only for
   assert.throws(() => service.extend(id), ConflictError);
 });
 
+test("an explicit exec timeout past the remaining TTL is a conflict; a default timeout is clamped and reports reason ttl", async () => {
+  const { service, runtime, clock } = makeService();
+  const box = await service.create();
+  await assert.rejects(service.exec(box.id, { cmd: ["sleep", "700"], timeoutMs: 700_000 }), ConflictError);
+  clock.advance(595_000); // 5 s of the 600 s TTL remain, less than the default 30 s timeout
+  runtime.nextExecResult = { timedOut: true, exitCode: 137 };
+  const r = await service.exec(box.id, { cmd: ["sleep", "60"] });
+  assert.equal(runtime.execCalls.at(-1)?.options.timeoutMs, 5_000, "the default timeout is clamped to the remaining TTL");
+  assert.equal(r.reason, "ttl");
+});
+
+test("a timeout within the remaining TTL reports as an ordinary timeout, with no reason", async () => {
+  const { service, runtime } = makeService();
+  const box = await service.create();
+  runtime.nextExecResult = { timedOut: true, exitCode: 137 };
+  const r = await service.exec(box.id, { cmd: ["sleep", "5"], timeoutMs: 5_000 });
+  assert.equal(r.timedOut, true);
+  assert.equal(r.reason, undefined);
+});
+
+test("extend cannot push a sandbox past its maximum lifetime", async () => {
+  const { service, clock } = makeService({ DEFAULT_TTL_SECONDS: "60", MAX_LIFETIME_SECONDS: "100" });
+  const box = await service.create();
+  assert.equal(box.expiresAt.getTime(), box.createdAt.getTime() + 60_000, "create uses the default TTL, within the lifetime cap");
+  clock.advance(50_000);
+  assert.equal(service.extend(box.id).expiresAt.getTime(), box.createdAt.getTime() + 100_000, "extend within the cap clamps to the lifetime limit");
+  clock.advance(60_000); // 110 s past creation, beyond the 100 s cap
+  assert.throws(() => service.extend(box.id), ConflictError);
+});
+
+test("exec at the lifetime cap refuses with a message to create a new sandbox, since extend cannot help there", async () => {
+  const { service, clock } = makeService({ DEFAULT_TTL_SECONDS: "60", MAX_LIFETIME_SECONDS: "100" });
+  const box = await service.create();
+  clock.advance(100_000); // at the 100 s lifetime cap; both the TTL and the cap are reached
+  await assert.rejects(service.exec(box.id, { cmd: ["true"] }), /maximum lifetime of 100 s; extend cannot help, so create a new sandbox/);
+});
+
+test("an exec timeout longer than the time left before the lifetime cap says to create a new sandbox, not extend", async () => {
+  const { service, clock } = makeService({ DEFAULT_TTL_SECONDS: "60", MAX_LIFETIME_SECONDS: "100" });
+  const box = await service.create();
+  clock.advance(55_000); // 5 s of TTL remain, and the lifetime cap is 45 s away
+  await assert.rejects(
+    service.exec(box.id, { cmd: ["sleep"], timeoutMs: 50_000 }),
+    /longer than the 45000 ms left before sandbox sbx_1 reaches its maximum lifetime; extend cannot help, so create a new sandbox/,
+  );
+});
+
 test("adopt after a restart: running containers come back ready, gone ones are expired, networked ones depend on the proxy", async () => {
   const { service, runtime } = makeService({ OPENAI_API_KEY: "sk" });
   const plain = await service.create();

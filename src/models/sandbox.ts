@@ -85,6 +85,8 @@ export interface ExecResult {
   timedOut: boolean;
   // True when stdout or stderr went over MAX_OUTPUT_BYTES and was cut.
   truncated: boolean;
+  // "ttl" when the command was stopped because the sandbox's remaining TTL, not the requested timeout, ran out.
+  reason?: "ttl";
 }
 
 /**

@@ -61,6 +61,10 @@ export class SandboxService {
   get maxArchiveBytes(): number {
     return this.config.maxArchiveBytes;
   }
+  // The absolute lifetime cap in seconds, so the HTTP layer can show each sandbox's hard expiry. 0 means no cap.
+  get maxLifetimeSeconds(): number {
+    return this.config.maxLifetimeSeconds;
+  }
 
   async create(request: CreateSandboxRequest = {}, owner = LOCAL_OWNER): Promise<Sandbox> {
     const limits = this.applyLimits(request);
@@ -81,7 +85,7 @@ export class SandboxService {
       network: egress?.network,
       startup: { source: "cold", ms: 0 },
       createdAt: now,
-      expiresAt: new Date(now.getTime() + limits.ttlSeconds * 1000),
+      expiresAt: this.cappedExpiry(now, limits.ttlSeconds),
       handle: undefined,
       activeExecs: 0,
     };
@@ -214,18 +218,47 @@ export class SandboxService {
 
   // With onOutput, chunks are delivered as they arrive; the result still holds the full output.
   async exec(id: string, request: ExecRequest, onOutput?: OutputListener, signal?: AbortSignal): Promise<ExecResult> {
-    const timeoutMs = request.timeoutMs ?? this.config.defaultExecTimeoutMs;
-    if (timeoutMs > this.config.maxExecTimeoutMs) {
-      throw new ValidationError(`timeoutMs ${timeoutMs} exceeds the server maximum of ${this.config.maxExecTimeoutMs}`);
+    const requested = request.timeoutMs ?? this.config.defaultExecTimeoutMs;
+    if (requested > this.config.maxExecTimeoutMs) {
+      throw new ValidationError(`timeoutMs ${requested} exceeds the server maximum of ${this.config.maxExecTimeoutMs}`);
     }
+    /**
+     * The command cannot outlive the sandbox. An explicitly requested timeout past the remaining TTL is a conflict
+     * the caller resolves by extending first; a default timeout is clamped to the remaining TTL and the result says so.
+     */
+    const sandbox = this.get(id);
+    const now = this.clock.now().getTime();
+    const remainingMs = sandbox.expiresAt.getTime() - now;
+    if (!isGone(sandbox)) {
+      // The furthest a maximal extend could reach; at or past the lifetime cap it is no later than now, so extend cannot help.
+      const maxReachableMs = this.config.maxLifetimeSeconds > 0 ? this.maxReachableExpiry(sandbox).getTime() - now : Infinity;
+      if (remainingMs <= 0) {
+        throw new ConflictError(
+          maxReachableMs <= 0
+            ? `sandbox ${id} has reached its maximum lifetime of ${this.config.maxLifetimeSeconds} s; extend cannot help, so create a new sandbox`
+            : `sandbox ${id} has reached its TTL; extend it before running a command`,
+        );
+      }
+      if (request.timeoutMs !== undefined && request.timeoutMs > remainingMs) {
+        throw new ConflictError(
+          request.timeoutMs > maxReachableMs
+            ? `timeoutMs ${request.timeoutMs} is longer than the ${Math.max(0, maxReachableMs)} ms left before sandbox ${id} reaches its maximum lifetime; extend cannot help, so create a new sandbox`
+            : `timeoutMs ${request.timeoutMs} is longer than the sandbox's remaining ${remainingMs} ms; extend it first`,
+        );
+      }
+    }
+    const timeoutMs = isGone(sandbox) ? requested : Math.min(requested, remainingMs);
+    const clampedByTtl = timeoutMs < requested;
     const options = { timeoutMs, cwd: resolveWorkspaceDir(request.cwd ?? "/workspace"), env: request.env ?? {}, ...(signal === undefined ? {} : { signal }) };
     const cmd = request.cmd.join(" ").slice(0, 300);
     this.log.debug({ sandbox: id, cmd, cwd: options.cwd, timeoutMs, env: Object.keys(options.env) }, "exec start");
     const startedAt = performance.now();
     try {
       const { lost, ...result } = await this.occupy(id, (handle) => this.runtime.exec(handle, request.cmd, options, onOutput));
+      // A command the clamp cut short was stopped by the TTL, not by the timeout the caller asked for.
+      if (clampedByTtl && result.timedOut) result.reason = "ttl";
       this.log.info(
-        { sandbox: id, cmd, cwd: options.cwd, exitCode: result.exitCode, ms: result.durationMs, timedOut: result.timedOut, truncated: result.truncated, stdoutBytes: Buffer.byteLength(result.stdout), stderrBytes: Buffer.byteLength(result.stderr) },
+        { sandbox: id, cmd, cwd: options.cwd, exitCode: result.exitCode, ms: result.durationMs, timedOut: result.timedOut, reason: result.reason, truncated: result.truncated, stdoutBytes: Buffer.byteLength(result.stdout), stderrBytes: Buffer.byteLength(result.stderr) },
         "exec done",
       );
       if (lost) {
@@ -294,7 +327,7 @@ export class SandboxService {
     }
   }
 
-  // Moves the expiry to now plus ttlSeconds (default: the sandbox's own TTL), within the server maximum.
+  // Moves the expiry to now plus ttlSeconds (default: the sandbox's own TTL), within the server maximum and the sandbox's maximum lifetime.
   extend(id: string, ttlSeconds?: number): Sandbox {
     const sandbox = this.get(id);
     if (isGone(sandbox)) throw new ConflictError(`sandbox ${id} is ${sandbox.status}`);
@@ -302,11 +335,26 @@ export class SandboxService {
     if (ttl > this.config.maximums.ttlSeconds) {
       throw new ValidationError(`ttlSeconds ${ttl} exceeds the server maximum of ${this.config.maximums.ttlSeconds}`);
     }
-    sandbox.expiresAt = new Date(this.clock.now().getTime() + ttl * 1000);
+    if (this.config.maxLifetimeSeconds > 0 && sandbox.createdAt.getTime() + this.config.maxLifetimeSeconds * 1000 <= this.clock.now().getTime()) {
+      throw new ConflictError(`sandbox ${id} has reached its maximum lifetime of ${this.config.maxLifetimeSeconds} s`);
+    }
+    sandbox.expiresAt = this.cappedExpiry(sandbox.createdAt, ttl);
     this.sandboxes.save(sandbox);
     this.armDeadline(sandbox);
     this.log.info({ sandbox: id, ttlSeconds: ttl, expiresAt: sandbox.expiresAt }, "sandbox extended");
     return sandbox;
+  }
+
+  // The expiry for a TTL from now, never later than the sandbox's maximum lifetime from createdAt when a cap is set.
+  private cappedExpiry(createdAt: Date, ttlSeconds: number): Date {
+    const expiresAt = this.clock.now().getTime() + ttlSeconds * 1000;
+    if (this.config.maxLifetimeSeconds <= 0) return new Date(expiresAt);
+    return new Date(Math.min(expiresAt, createdAt.getTime() + this.config.maxLifetimeSeconds * 1000));
+  }
+
+  // The furthest expiry a maximal extend could set: the server's maximum TTL from now, still capped at the lifetime ceiling.
+  private maxReachableExpiry(sandbox: Sandbox): Date {
+    return this.cappedExpiry(sandbox.createdAt, this.config.maximums.ttlSeconds);
   }
 
   // Not awaited, so a pool create stays at a millisecond; the reaper enforces the TTL while the server runs anyway.

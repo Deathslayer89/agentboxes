@@ -39,6 +39,8 @@ class ExecResult:
     duration_ms: int
     timed_out: bool
     truncated: bool
+    # "ttl" when the command was stopped because the sandbox's remaining TTL ran out, not the requested timeout.
+    reason: Optional[str] = None
 
 
 class ExecTimeout(Exception):
@@ -50,7 +52,7 @@ class ExecTimeout(Exception):
 
 
 def _result(data: Dict[str, Any]) -> ExecResult:
-    return ExecResult(data["exitCode"], data["stdout"], data["stderr"], data["durationMs"], data["timedOut"], data["truncated"])
+    return ExecResult(data["exitCode"], data["stdout"], data["stderr"], data["durationMs"], data["timedOut"], data["truncated"], data.get("reason"))
 
 
 class Agentbox:
@@ -172,7 +174,7 @@ class Sandbox:
                     for name in ("stdout", "stderr"):
                         if pending[name]:
                             yield (name, pending[name])
-                    yield ("exit", ExecResult(data["exitCode"], "", "", data["durationMs"], data["timedOut"], data["truncated"]))
+                    yield ("exit", ExecResult(data["exitCode"], "", "", data["durationMs"], data["timedOut"], data["truncated"], data.get("reason")))
                 elif event == "error":
                     raise AgentboxError(data["message"], 0, data["error"])
 

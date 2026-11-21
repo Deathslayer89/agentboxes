@@ -27,6 +27,15 @@ function makeApp(options: AppOptions = {}, env: NodeJS.ProcessEnv = {}) {
   return { app: createApp(service, options), service, runtime };
 }
 
+test("the sandbox view shows maxExpiresAt when a lifetime cap is set and omits it when the cap is 0", async () => {
+  const capped = makeApp({}, { MAX_LIFETIME_SECONDS: "3600" }).app;
+  const withCap = (await (await capped.request("/sandboxes", { method: "POST", body: "{}" })).json()) as { createdAt: string; maxExpiresAt?: string };
+  assert.equal(new Date(withCap.maxExpiresAt ?? "").getTime(), new Date(withCap.createdAt).getTime() + 3_600_000);
+  const uncapped = makeApp({}, { MAX_LIFETIME_SECONDS: "0" }).app;
+  const noCap = (await (await uncapped.request("/sandboxes", { method: "POST", body: "{}" })).json()) as { maxExpiresAt?: string };
+  assert.equal(noCap.maxExpiresAt, undefined);
+});
+
 test("create, exec, get, list, destroy over HTTP", async () => {
   const { app } = makeApp();
   const created = await app.request("/sandboxes", { method: "POST", body: "{}" });

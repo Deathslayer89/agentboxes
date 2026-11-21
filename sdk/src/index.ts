@@ -45,6 +45,8 @@ export interface SandboxInfo {
   startup: { source: "pool" | "cold"; ms: number };
   createdAt: string;
   expiresAt: string;
+  // The latest expiry extend will ever grant (createdAt plus the server's lifetime cap); absent when there is no cap.
+  maxExpiresAt?: string;
 }
 
 export interface ExecOptions {
@@ -62,12 +64,14 @@ export interface ExecResult {
   durationMs: number;
   timedOut: boolean;
   truncated: boolean;
+  // "ttl" when the command was stopped because the sandbox's remaining TTL ran out, not the requested timeout.
+  reason?: "ttl";
 }
 
 export type ExecEvent =
   | { type: "stdout"; text: string }
   | { type: "stderr"; text: string }
-  | { type: "exit"; exitCode: number; durationMs: number; timedOut: boolean; truncated: boolean };
+  | { type: "exit"; exitCode: number; durationMs: number; timedOut: boolean; truncated: boolean; reason?: "ttl" };
 
 export interface Template {
   name: string;

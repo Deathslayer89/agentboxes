@@ -209,7 +209,7 @@ test("N1/N2/N3: an allowlisted sandbox reaches only the listed hosts; refusals a
       timeoutMs: 20_000,
     });
     assert.equal(loopback.stdout.trim(), "200", `a server on the sandbox's own loopback bypasses the proxy: ${loopback.stderr}`);
-    const pip = await service.exec(box.id, { cmd: ["pip", "download", "--no-deps", "-q", "-d", "/tmp/dl", "six"], timeoutMs: 120_000 });
+    const pip = await service.exec(box.id, { cmd: ["pip", "download", "--no-deps", "-q", "-d", "/tmp/dl", "six"], timeoutMs: 60_000 });
     assert.equal(pip.exitCode, 0, pip.stderr);
     const toHost = await service.exec(box.id, { cmd: ["python", "-c", "import socket\nsocket.create_connection(('172.17.0.1', 7788), timeout=3)"] });
     assert.notEqual(toHost.exitCode, 0, "the docker bridge address of the host is not reachable");

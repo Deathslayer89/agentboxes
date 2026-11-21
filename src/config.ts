@@ -54,6 +54,8 @@ export interface Config {
   maxArchiveBytes: number;
   // Cap on live sandboxes across all callers. Containers waiting in the warm pool do not count.
   maxSandboxes: number;
+  // Absolute maximum age of a sandbox from creation, in seconds; extend cannot push it past this. 0 means no cap.
+  maxLifetimeSeconds: number;
   // Warm pool size per template, for example { default: 3, "data-science": 2 }. 0 turns a pool off.
   poolSizes: Record<string, number>;
   reaperIntervalMs: number;
@@ -106,6 +108,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxFileBytes: num("MAX_FILE_BYTES", 8 * 1_048_576),
     maxArchiveBytes: num("MAX_ARCHIVE_BYTES", 256 * 1_048_576),
     maxSandboxes: num("MAX_SANDBOXES", 20),
+    maxLifetimeSeconds: nonNegativeInt(env.MAX_LIFETIME_SECONDS, "MAX_LIFETIME_SECONDS", 86_400),
     poolSizes: parsePoolSizes(env.POOL_SIZES),
     reaperIntervalMs: num("REAPER_INTERVAL_MS", 10_000),
     secrets: parseSecrets(env),
@@ -214,4 +217,12 @@ function parseSecrets(env: NodeJS.ProcessEnv): Record<string, ConfiguredSecret> 
     secrets[host.toLowerCase()] = { header, value: prefix + value, env: def.env, ...(keys !== undefined ? { keys } : {}) };
   }
   return secrets;
+}
+
+// A whole number that may be zero (zero disables the limit), from `name`, or the fallback when unset.
+function nonNegativeInt(raw: string | undefined, name: string, fallback: number): number {
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer, got "${raw}"`);
+  return value;
 }

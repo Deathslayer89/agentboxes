@@ -16,9 +16,11 @@ import { parseCreateRequest, parseExecRequest, parseExtendRequest } from "./vali
 const STATUS_PAGE = readFileSync(fileURLToPath(new URL("./status.html", import.meta.url)), "utf8");
 
 // The public shape of a sandbox: everything except runtime bookkeeping.
-function view(sandbox: Sandbox) {
+function view(sandbox: Sandbox, maxLifetimeSeconds: number) {
   const { id, status, template, limits, network, startup, createdAt, expiresAt } = sandbox;
-  return { id, status, template, limits, network, startup, createdAt, expiresAt };
+  // The sandbox's hard expiry: the latest expiresAt that extend will ever grant. Omitted when there is no lifetime cap.
+  const maxExpiresAt = maxLifetimeSeconds > 0 ? new Date(createdAt.getTime() + maxLifetimeSeconds * 1000) : undefined;
+  return { id, status, template, limits, network, startup, createdAt, expiresAt, ...(maxExpiresAt === undefined ? {} : { maxExpiresAt }) };
 }
 
 // Maps the error classes the service throws to HTTP status codes.
@@ -126,12 +128,12 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
 
   app.post("/sandboxes", async (c) => {
     const sandbox = await service.create(parseCreateRequest(await jsonBody(c)), ownerOf(c));
-    return c.json(view(sandbox), 201);
+    return c.json(view(sandbox, service.maxLifetimeSeconds), 201);
   });
 
-  app.get("/sandboxes", (c) => c.json(service.list(c.req.query("all") === "true", ownerOf(c)).map(view)));
+  app.get("/sandboxes", (c) => c.json(service.list(c.req.query("all") === "true", ownerOf(c)).map((s) => view(s, service.maxLifetimeSeconds))));
 
-  app.get("/sandboxes/:id", (c) => c.json(view(service.get(own(c)))));
+  app.get("/sandboxes/:id", (c) => c.json(view(service.get(own(c)), service.maxLifetimeSeconds)));
 
   // A client that goes away takes its command with it.
   app.post("/sandboxes/:id/exec", async (c) => {
@@ -142,7 +144,7 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
   /**
    * Same body as exec; the response is a Server-Sent Events stream.
    *   event: stdout | stderr   data: JSON string with the chunk
-   *   event: exit              data: { exitCode, durationMs, timedOut, truncated }
+   *   event: exit              data: { exitCode, durationMs, timedOut, truncated, reason? }
    *   event: error             data: { error, message }, only when exec fails after the stream began
    * Each chunk is a JSON string so embedded newlines survive the SSE framing.
    */
@@ -156,13 +158,13 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
       const gone = new AbortController();
       stream.onAbort(() => gone.abort());
       try {
-        const { exitCode, durationMs, timedOut, truncated } = await service.exec(
+        const { exitCode, durationMs, timedOut, truncated, reason } = await service.exec(
           id,
           request,
           (name, chunk) => void send(name, decoders[name].write(chunk)),
           gone.signal,
         );
-        await send("exit", { exitCode, durationMs, timedOut, truncated });
+        await send("exit", { exitCode, durationMs, timedOut, truncated, ...(reason === undefined ? {} : { reason }) });
       } catch (err) {
         const known = err instanceof DomainError;
         if (!known) unexpected(err);
@@ -171,7 +173,7 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
     });
   });
 
-  app.post("/sandboxes/:id/extend", async (c) => c.json(view(service.extend(own(c), parseExtendRequest(await jsonBody(c))))));
+  app.post("/sandboxes/:id/extend", async (c) => c.json(view(service.extend(own(c), parseExtendRequest(await jsonBody(c))), service.maxLifetimeSeconds)));
 
   // Whole trees as tar archives, so a repository goes in or out in one request.
   app.put("/sandboxes/:id/archive", async (c) => {
@@ -187,7 +189,7 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
 
   app.get("/sandboxes/:id/egress-log", async (c) => c.json(await service.egressLog(own(c))));
 
-  app.delete("/sandboxes/:id", async (c) => c.json(view(await service.destroy(own(c)))));
+  app.delete("/sandboxes/:id", async (c) => c.json(view(await service.destroy(own(c)), service.maxLifetimeSeconds)));
 
   // Raw bytes in and out; the path travels in the query string so the body stays unencoded.
   app.put("/sandboxes/:id/files", async (c) => {

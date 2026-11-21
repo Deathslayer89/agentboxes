@@ -86,3 +86,10 @@ test("the database path prefers AGENTBOX_DB, keeps an existing ./data file, and 
   assert.equal(pickDbPath({ AGENTBOX_DB: LEGACY_DB_PATH }, true).legacy, false);
   assert.equal(loadConfig({ AGENTBOX_DB: LEGACY_DB_PATH }).dbPathIsLegacy, false);
 });
+
+test("MAX_LIFETIME_SECONDS defaults to one day, accepts zero to disable the cap, and refuses a negative value", () => {
+  assert.equal(loadConfig({}).maxLifetimeSeconds, 86_400);
+  assert.equal(loadConfig({ MAX_LIFETIME_SECONDS: "0" }).maxLifetimeSeconds, 0);
+  assert.equal(loadConfig({ MAX_LIFETIME_SECONDS: "3600" }).maxLifetimeSeconds, 3600);
+  assert.throws(() => loadConfig({ MAX_LIFETIME_SECONDS: "-1" }), /non-negative integer/);
+});
