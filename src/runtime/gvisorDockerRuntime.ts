@@ -26,7 +26,7 @@ const LABEL_SERVER = "agentbox.server";
  * kill the whole container.
  */
 const GUARD_MS = 5_000;
-// A container caught in a transitional state after an exec is re-inspected up to DEATH_WATCH_POLLS * DEATH_WATCH_INTERVAL_MS (2 s), because Docker settles a sandbox's teardown a little after the exec ends; a running or already-stopped container is decided on the first inspect.
+// After a kill-like exit the container is re-inspected up to DEATH_WATCH_POLLS * DEATH_WATCH_INTERVAL_MS (2 s), because Docker reports a killed sandbox's stop a little after the exec ends, so a single inspect can still show it running.
 const DEATH_WATCH_POLLS = 20;
 const DEATH_WATCH_INTERVAL_MS = 100;
 // Where PID 1 reads the sandbox's end time, as epoch seconds. Written as root, so the sandbox user cannot move it.
@@ -393,9 +393,8 @@ export class GvisorDockerRuntime implements SandboxRuntime {
        * Only the exit codes a killed gVisor sandbox produces are worth watching: no code at all, 128 (the sentry's
        * urpc/WaitPID EOF when the sandbox is torn down), or 137 (SIGKILL) when the command did not simply hit its own
        * timeout. A normal non-zero exit such as 1, 2, 130, 143 or 255 means the sandbox is fine and is left alone.
-       * stillRunning decides from one inspect, reporting the sandbox lost only when it is OOM-killed or stopped, so a
-       * healthy sandbox that exits with one of these codes returns at once; when it is lost the record is closed now
-       * instead of at the next reaper pass.
+       * stillRunning watches the container briefly and reports the sandbox lost once it stops or is OOM-killed; when it
+       * is lost the record is closed now instead of at the next reaper pass.
        */
       const timedOut = ExitCode === 137 && durationMs >= timeoutMs;
       const maybeDead = ExitCode === null || ExitCode === 128 || (ExitCode === 137 && !timedOut);
@@ -415,30 +414,28 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     }
   }
 
-  // The container's running flag, OOM flag and status, or undefined when it no longer exists.
-  private async stateOf(container: Docker.Container): Promise<{ Running: boolean; OOMKilled: boolean; Status: string } | undefined> {
+  // The container's running flag and OOM flag, or undefined when it no longer exists.
+  private async stateOf(container: Docker.Container): Promise<{ Running: boolean; OOMKilled: boolean } | undefined> {
     try {
-      return ((await container.inspect()) as { State: { Running: boolean; OOMKilled: boolean; Status: string } }).State;
+      return ((await container.inspect()) as { State: { Running: boolean; OOMKilled: boolean } }).State;
     } catch {
       return undefined;
     }
   }
 
   /**
-   * True while the sandbox is still alive after a kill-like exit code. One inspect answers the common cases: a container
-   * still running and not OOM-killed is healthy, so a command that exits 137 or 128 on its own returns at once; an
-   * OOM-killed or stopped container is dead. Only a container Docker still reports as transitional is polled for up to
-   * DEATH_WATCH_POLLS * DEATH_WATCH_INTERVAL_MS (2 s), because it settles a sandbox's teardown a little after the exec ends.
+   * True while the sandbox is still alive after a kill-like exit code. A sandbox killed past its memory cap stops a
+   * moment after the exec returns, so this re-inspects until the container stops or is OOM-killed (lost), or until the
+   * watch ends with it still running (a command that merely exited 137 or 128 on its own, so the sandbox is kept).
    */
   private async stillRunning(container: Docker.Container): Promise<boolean> {
     for (let i = 0; i < DEATH_WATCH_POLLS; i++) {
       const state = await this.stateOf(container);
       if (state === undefined || state.OOMKilled) return false;
-      if (state.Running) return true;
-      if (state.Status === "exited" || state.Status === "dead") return false;
+      if (!state.Running) return false;
       await new Promise((resolve) => setTimeout(resolve, DEATH_WATCH_INTERVAL_MS));
     }
-    return false;
+    return true;
   }
 
   // Kills every process in the sandbox whose environment carries the marker.
