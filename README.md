@@ -15,7 +15,7 @@ What you get:
 
 ## Install
 
-You need Linux, Docker 20+ (29+ if you want the network allowlist or secrets) and Node 20+.
+You need Linux, Docker 20+ (28+ if you want the network allowlist or secrets) and Node 20+.
 
 ```bash
 npx agentboxes setup     # installs gVisor if it's missing and checks it works

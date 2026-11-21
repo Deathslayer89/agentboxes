@@ -41,6 +41,8 @@ const SOURCE_FILES = ["Dockerfile", "policy.mjs", "certs.mjs", "leafs.mjs", "ser
 // Where the CA certificate and the combined bundle are written inside a sandbox with secrets.
 export const CA_DIR = "/tmp/agentbox";
 const MB = 1024 * 1024;
+// The first two octets of the /16 that per-sandbox /24 networks are carved from; override with AGENTBOX_NETWORK_POOL when 10.201 clashes with the host.
+const NETWORK_POOL_BASE = (process.env.AGENTBOX_NETWORK_POOL || "10.201.0.0/16").split(".").slice(0, 2).join(".");
 
 /**
  * Runs the egress proxy container and gives each allowlisted sandbox its own internal Docker
@@ -161,16 +163,37 @@ export class EgressProxyManager {
     }
   }
 
+  /**
+   * Creates a sandbox network with an explicit /24 subnet from the pool, so pinning the proxy's IP is legal on Docker
+   * 28 as well as 29 (Docker 28 rejects a pinned IP on a network it auto-subnetted). Skips subnets already on the host
+   * and retries the next one when Docker reports an overlap.
+   */
+  private async createSandboxNetwork(name: string, sandboxId: string): Promise<ReturnType<Docker["getNetwork"]>> {
+    const used = new Set<string>();
+    for (const n of await this.docker.listNetworks()) for (const c of n.IPAM?.Config ?? []) if (c.Subnet) used.add(c.Subnet);
+    let lastError: unknown;
+    for (const subnet of candidateSubnets(NETWORK_POOL_BASE, used)) {
+      try {
+        return await this.docker.createNetwork({
+          Name: name,
+          Driver: "bridge",
+          Internal: true,
+          Options: { "com.docker.network.bridge.gateway_mode_ipv4": "isolated" },
+          Labels: { [LABEL_NETWORK]: sandboxId, [LABEL_SERVER]: this.serverId },
+          IPAM: { Config: [{ Subnet: subnet }] },
+        });
+      } catch (e) {
+        if (!isPoolOverlap(e)) throw e;
+        lastError = e; // another network took this subnet between the listing and now; try the next
+      }
+    }
+    throw new Error(`no free sandbox subnet in ${NETWORK_POOL_BASE}.0.0/16${lastError instanceof Error ? `: ${lastError.message}` : ""}`);
+  }
+
   // Creates the network, puts the proxy on it, registers the policy and returns what the sandbox needs.
   async attach(sandboxId: string, policy: EgressPolicy): Promise<EgressAttachment> {
     const name = `agentbox-${sandboxId}`;
-    const network = await this.docker.createNetwork({
-      Name: name,
-      Driver: "bridge",
-      Internal: true,
-      Options: { "com.docker.network.bridge.gateway_mode_ipv4": "isolated" },
-      Labels: { [LABEL_NETWORK]: sandboxId, [LABEL_SERVER]: this.serverId },
-    });
+    const network = await this.createSandboxNetwork(name, sandboxId);
     try {
       const subnet = ((await network.inspect()) as { IPAM: { Config: Array<{ Subnet: string }> } }).IPAM.Config[0]?.Subnet;
       if (subnet === undefined) throw new Error("sandbox network has no subnet");
@@ -358,6 +381,20 @@ function secondHost(subnet: string): string {
   const [a = 0, b = 0, c = 0, d = 0] = (subnet.split("/")[0] ?? "").split(".").map(Number);
   const n = (((a << 24) | (b << 16) | (c << 8) | d) + 2) >>> 0;
   return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
+}
+
+// The /24 subnets to try for a sandbox network, from the pool's first two octets, skipping any subnet already on the host.
+export function* candidateSubnets(poolBase: string, used: Set<string>): Generator<string> {
+  for (let i = 0; i < 256; i++) {
+    const subnet = `${poolBase}.${i}.0/24`;
+    if (!used.has(subnet)) yield subnet;
+  }
+}
+
+// Docker refuses a subnet that overlaps another network; the next one in the pool is tried instead.
+function isPoolOverlap(e: unknown): boolean {
+  const message = typeof e === "object" && e !== null && "message" in e ? String((e as { message: unknown }).message) : "";
+  return /overlap|already in use/i.test(message);
 }
 
 function isNotFound(e: unknown): boolean {
