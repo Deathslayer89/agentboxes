@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loadConfig, parsePoolSizes } from "../../../src/config.js";
+import { LEGACY_DB_PATH, loadConfig, parsePoolSizes, pickDbPath } from "../../../src/config.js";
 
 test("POOL_SIZES parses name:count pairs and defaults to one default pool of 3", () => {
   assert.deepEqual(parsePoolSizes(undefined), { default: 3 });
@@ -62,4 +62,14 @@ test("AGENTBOX_SECRETS is refused when its JSON, its variable or its header is w
   assert.throws(() => loadConfig({ AGENTBOX_SECRETS: '["api.openai.com"]' }), /object of host to secret/);
   assert.throws(() => loadConfig({ AGENTBOX_SECRETS: '{"api.openai.com":"MISSING_KEY"}' }), /MISSING_KEY for api.openai.com is not set/);
   assert.throws(() => loadConfig({ KEY: "v", AGENTBOX_SECRETS: '{"api.openai.com":{"env":"KEY","header":"Host"}}' }), /may not use the Host header/);
+});
+
+test("the database path prefers AGENTBOX_DB, keeps an existing ./data file, and otherwise uses the per-user default", () => {
+  assert.deepEqual(pickDbPath({ AGENTBOX_DB: "/custom/db.sqlite" }, true), { path: "/custom/db.sqlite", legacy: false });
+  assert.deepEqual(pickDbPath({}, true), { path: LEGACY_DB_PATH, legacy: true });
+  assert.deepEqual(pickDbPath({ XDG_DATA_HOME: "/xdg" }, false), { path: "/xdg/agentbox/agentbox.db", legacy: false });
+  assert.equal(pickDbPath({ HOME: "/home/dev" }, false).path, "/home/dev/.local/share/agentbox/agentbox.db");
+  // Setting AGENTBOX_DB to the legacy path on purpose is not the deprecated fallback, so it must not be flagged legacy.
+  assert.equal(pickDbPath({ AGENTBOX_DB: LEGACY_DB_PATH }, true).legacy, false);
+  assert.equal(loadConfig({ AGENTBOX_DB: LEGACY_DB_PATH }).dbPathIsLegacy, false);
 });

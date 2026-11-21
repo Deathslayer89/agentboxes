@@ -2,9 +2,9 @@ import { serve } from "@hono/node-server";
 import Docker from "dockerode";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { SystemClock } from "./clock.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, pickDbPath } from "./config.js";
 import { RuntimeUnavailableError } from "./errors.js";
 import { createApp } from "./http/app.js";
 import { RandomIdGenerator } from "./id.js";
@@ -48,6 +48,10 @@ const running = livePid(pidFile);
 if (running !== undefined) {
   log.fatal({ pid: running, pidFile }, `an agentbox server is already running on ${config.dbPath} (pid ${running}): stop it with npm stop, or delete ${pidFile} if that pid is not agentbox`);
   process.exit(1);
+}
+if (config.dbPathIsLegacy) {
+  const moved = pickDbPath({ ...process.env, AGENTBOX_DB: undefined }, false).path;
+  log.warn(`agentbox is using the database at ${resolve(config.dbPath)}; the default is moving to ${moved}. To keep this one, set AGENTBOX_DB=${resolve(config.dbPath)}; otherwise move the file to ${moved}.`);
 }
 const docker = new Docker();
 const store = new SqliteStore(config.dbPath);

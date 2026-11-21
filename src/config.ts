@@ -1,7 +1,24 @@
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ApiKey } from "./models/apiKey.js";
 import type { SandboxLimits, SecretSpec } from "./models/sandbox.js";
 import { DEFAULT_TEMPLATE, isValidTemplateName } from "./models/template.js";
 import type { SecretHeader } from "./runtime/sandboxRuntime.js";
+
+// The database path a project used before the default moved under the user's data directory.
+export const LEGACY_DB_PATH = "data/agentbox.db";
+
+/**
+ * Where the SQLite file lives: AGENTBOX_DB when set, else the legacy ./data/agentbox.db when it already exists
+ * (so an existing install keeps its data), else the per-user default under XDG_DATA_HOME or ~/.local/share.
+ */
+export function pickDbPath(env: NodeJS.ProcessEnv, legacyExists: boolean): { path: string; legacy: boolean } {
+  if (env.AGENTBOX_DB) return { path: env.AGENTBOX_DB, legacy: false };
+  if (legacyExists) return { path: LEGACY_DB_PATH, legacy: true };
+  const base = env.XDG_DATA_HOME || join(env.HOME || homedir(), ".local", "share");
+  return { path: join(base, "agentbox", "agentbox.db"), legacy: false };
+}
 
 // Headers the proxy owns; a configured secret may not be sent in one of these.
 const RESERVED_HEADERS = new Set(["host", "content-length", "transfer-encoding", "connection", "proxy-authorization"]);
@@ -37,6 +54,8 @@ export interface Config {
   secrets: Record<string, SecretHeader>;
   // SQLite file for sandbox records and settings, so they survive a server restart.
   dbPath: string;
+  // True when dbPath fell back to the legacy ./data/agentbox.db because it exists and AGENTBOX_DB is unset.
+  dbPathIsLegacy: boolean;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -49,6 +68,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   };
 
   const apiKeys = parseApiKeys(env.AGENTBOX_API_KEY, env.AGENTBOX_API_KEYS);
+  const db = pickDbPath(env, existsSync(LEGACY_DB_PATH));
   const host = env.HOST || "127.0.0.1";
   if (apiKeys.length === 0 && !["127.0.0.1", "localhost", "::1"].includes(host)) {
     throw new Error(`HOST=${host} would expose the server without an API key; set AGENTBOX_API_KEY first`);
@@ -82,7 +102,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     poolSizes: parsePoolSizes(env.POOL_SIZES),
     reaperIntervalMs: num("REAPER_INTERVAL_MS", 10_000),
     secrets: parseSecrets(env),
-    dbPath: env.AGENTBOX_DB || "data/agentbox.db",
+    dbPath: db.path,
+    dbPathIsLegacy: db.legacy,
   };
 
   if (config.runtime !== "auto" && config.runtime !== "firecracker" && !/^runsc(-[a-z0-9]+)?$/.test(config.runtime)) {
