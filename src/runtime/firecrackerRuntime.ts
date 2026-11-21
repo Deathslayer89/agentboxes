@@ -188,6 +188,11 @@ export class FirecrackerRuntime implements SandboxRuntime {
     return false;
   }
 
+  // The firecracker runtime has no egress proxy or labeled containers, so there is nothing from an older version to clean up.
+  async removePreUpgradeLeftovers(): Promise<string[]> {
+    return [];
+  }
+
   // Every VM dies with the server, including one that was still restoring for the pool.
   async shutdown(): Promise<void> {
     for (const id of [...this.vms.keys()]) await this.destroy(id);

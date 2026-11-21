@@ -52,6 +52,10 @@ export class FakeRuntime implements SandboxRuntime {
     return this.egressReadoptSucceeds;
   }
 
+  async removePreUpgradeLeftovers(): Promise<string[]> {
+    return [];
+  }
+
   async shutdown(): Promise<void> {}
 
   // Echoes the command back on stdout, in two chunks so streaming tests see more than one.

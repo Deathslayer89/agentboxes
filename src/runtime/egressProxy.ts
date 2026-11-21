@@ -30,7 +30,7 @@ const CONTAINER = "agentbox-egress-proxy";
 const PROXY_PORT = 3128;
 const CONTROL_PORT = 3129;
 const LABEL_PROXY = "agentbox.proxy";
-// The id of the server that owns a network, so a second server on the host never removes this one's networks.
+// The id of the server that owns a network.
 const LABEL_SERVER = "agentbox.server";
 const ADMIN_TOKEN_SETTING = "egressProxy.adminToken";
 const LABEL_SOURCE = "agentbox.proxy.source";
@@ -273,12 +273,20 @@ export class EgressProxyManager {
   async removePreUpgradeProxy(): Promise<string[]> {
     const removed: string[] = [];
     for (const c of await this.docker.listContainers({ all: true, filters: { name: [`^/${CONTAINER}$`] } })) {
-      await this.docker.getContainer(c.Id).remove({ force: true }).catch(() => {});
+      try {
+        await this.docker.getContainer(c.Id).remove({ force: true });
+      } catch {
+        continue; // leave it for the next run rather than report a name that is still there
+      }
       removed.push(c.Names[0] ?? c.Id);
     }
     for (const n of await this.docker.listNetworks({ filters: { label: [LABEL_NETWORK] } })) {
       if (n.Labels?.[LABEL_SERVER] !== undefined) continue; // a current server's network, not a pre-upgrade one
-      await this.docker.getNetwork(n.Id).remove().catch(() => {});
+      try {
+        await this.docker.getNetwork(n.Id).remove();
+      } catch {
+        continue; // leave it for the next run rather than report a name that is still there
+      }
       removed.push(n.Name);
     }
     return removed;

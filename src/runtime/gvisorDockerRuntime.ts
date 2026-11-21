@@ -316,6 +316,27 @@ export class GvisorDockerRuntime implements SandboxRuntime {
   }
 
   /**
+   * One-time cleanup run when this server first gets an id (an upgrade from a version before per-server labels):
+   * removes the sandbox containers and egress proxy that version left, which the per-server label filters never see
+   * and so would never reap. Only touches containers with no `agentbox.server` label, so another server's containers
+   * are left alone. Returns the names removed, for the log.
+   */
+  async removePreUpgradeLeftovers(): Promise<string[]> {
+    const removed: string[] = [];
+    for (const c of await this.docker.listContainers({ all: true, filters: { label: [LABEL] } })) {
+      if (!isPreUpgradeSandbox(c.Labels)) continue;
+      try {
+        await this.docker.getContainer(c.Id).remove({ force: true, v: true });
+      } catch {
+        continue; // leave it for the next run rather than report a name that is still there
+      }
+      removed.push(c.Names[0] ?? c.Id);
+    }
+    removed.push(...(await this.egress.removePreUpgradeProxy()));
+    return removed;
+  }
+
+  /**
    * Runs one command inside the container under coreutils `timeout`, which kills the
    * command's whole process group at the deadline (exit code 137 = killed by SIGKILL).
    */
@@ -488,4 +509,9 @@ function translateDockerError(e: unknown): unknown {
   const status = statusCodeOf(e);
   if (status === 404 || status === 409) return new ConflictError(`sandbox is no longer running: ${messageOf(e)}`);
   return e;
+}
+
+// A sandbox container from a version before per-server labels: it has the agentbox label but no agentbox.server.
+export function isPreUpgradeSandbox(labels: Record<string, string>): boolean {
+  return labels[LABEL] !== undefined && labels[LABEL_SERVER] === undefined;
 }

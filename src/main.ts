@@ -1,10 +1,10 @@
 import { serve } from "@hono/node-server";
 import Docker from "dockerode";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { SystemClock } from "./clock.js";
-import { loadConfig, pickDbPath, pidPathFor } from "./config.js";
+import { isUpgradeStart, loadConfig, pickDbPath, pidPathFor } from "./config.js";
 import { RuntimeUnavailableError } from "./errors.js";
 import { createApp } from "./http/app.js";
 import { RandomIdGenerator } from "./id.js";
@@ -61,9 +61,12 @@ if (config.apiKeys.length > 0) {
   }
 }
 const docker = new Docker();
+// Whether the database file was there before this process opened it, which tells an upgrade apart from a fresh install.
+const dbExistedBeforeStart = existsSync(config.dbPath);
 const store = new SqliteStore(config.dbPath);
 // One id per data directory, so this server only ever reaps the containers and proxy it owns, even if another server shares the host.
 let serverId = store.settings.get("server.id");
+const freshServer = serverId === undefined;
 if (serverId === undefined) {
   serverId = randomBytes(8).toString("hex");
   store.settings.set("server.id", serverId);
@@ -84,6 +87,12 @@ try {
     process.exit(1);
   }
   throw e;
+}
+
+// On an in-place upgrade, remove the containers, networks and proxy a version before per-server labels left, which the label filters would never reap; a fresh install on a shared host removes nothing, whatever its AGENTBOX_DB path.
+if (isUpgradeStart(freshServer, dbExistedBeforeStart)) {
+  const removed = await runtime.removePreUpgradeLeftovers();
+  if (removed.length > 0) log.info({ removed }, "removed leftovers from a version before per-server labels");
 }
 
 // One pool per template in POOL_SIZES. A template that is not built yet is a startup error, not a silent miss.

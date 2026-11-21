@@ -415,6 +415,7 @@ test("a second server on the same host leaves this server's sandbox alone", asyn
     assert.equal((await service.exec(box.id, { cmd: ["echo", "alive"] })).stdout.trim(), "alive");
   } finally {
     await service.destroy(box.id).catch(() => {});
+    await removeServer("srvtest_other");
   }
 });
 
@@ -525,5 +526,28 @@ test("restart: a second server run adopts running sandboxes from the SQLite file
   } finally {
     await removeServer("srvtest_restart");
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the first start after an upgrade removes containers from a version before per-server labels, and leaves another server's alone", async () => {
+  await docker.getContainer("agentbox-egress-proxy").remove({ force: true }).catch(() => {});
+  const legacy = await docker.createContainer({ Image: config.image, Cmd: ["true"], Labels: { agentbox: "1" } });
+  const oldProxy = await docker.createContainer({ Image: config.image, Cmd: ["true"], name: "agentbox-egress-proxy", Labels: { agentbox: "1" } });
+  const otherServer = await docker.createContainer({ Image: config.image, Cmd: ["true"], Labels: { agentbox: "1", "agentbox.server": "someotherserver" } });
+  const legacyNet = await docker.createNetwork({ Name: "agentbox-sbxlegacy", Labels: { "agentbox.network": "sbxlegacy" } });
+  const otherNet = await docker.createNetwork({ Name: "agentbox-sbxother", Labels: { "agentbox.network": "sbxother", "agentbox.server": "someotherserver" } });
+  try {
+    const removed = await runtime.removePreUpgradeLeftovers();
+    assert.ok(removed.length >= 2, `expected the legacy sandbox and old proxy among the removed, got ${removed.join(", ")}`);
+    const ids = new Set((await docker.listContainers({ all: true })).map((c) => c.Id));
+    assert.ok(!ids.has(legacy.id), "a sandbox from before per-server labels is removed");
+    assert.ok(!ids.has(oldProxy.id), "the old egress proxy is removed");
+    assert.ok(ids.has(otherServer.id), "another server's current container is left alone");
+    const nets = new Set((await docker.listNetworks()).map((n) => n.Id));
+    assert.ok(!nets.has(legacyNet.id), "a sandbox network from before per-server labels is removed");
+    assert.ok(nets.has(otherNet.id), "another server's current network is left alone");
+  } finally {
+    for (const c of [legacy, oldProxy, otherServer]) await docker.getContainer(c.id).remove({ force: true }).catch(() => {});
+    for (const n of [legacyNet, otherNet]) await docker.getNetwork(n.id).remove().catch(() => {});
   }
 });

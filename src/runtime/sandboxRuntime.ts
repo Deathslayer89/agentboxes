@@ -107,6 +107,9 @@ export interface SandboxRuntime {
   // Re-register an adopted sandbox's egress policy with the proxy after a restart, so the allowlist and secrets are enforced again. False when it cannot be rebuilt.
   readoptEgress(sandboxId: string, handle: string, allowHosts: string[], secrets: Record<string, SecretHeader>): Promise<boolean>;
 
+  // One-time cleanup on first start: remove sandboxes and the proxy left by a version before per-server labels. Returns the names removed.
+  removePreUpgradeLeftovers(): Promise<string[]>;
+
   // Stop anything the backend runs for itself. Called once at shutdown; the egress proxy is left running for adopted sandboxes.
   shutdown(): Promise<void>;
 }

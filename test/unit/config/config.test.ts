@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { LEGACY_DB_PATH, loadConfig, looksLikeAgentbox, parsePoolSizes, pickDbPath, pidPathFor } from "../../../src/config.js";
+import { LEGACY_DB_PATH, isUpgradeStart, loadConfig, looksLikeAgentbox, parsePoolSizes, pickDbPath, pidPathFor } from "../../../src/config.js";
 
 test("POOL_SIZES parses name:count pairs and defaults to one default pool of 3", () => {
   assert.deepEqual(parsePoolSizes(undefined), { default: 3 });
@@ -106,6 +106,12 @@ test("stop's process check accepts an agentbox server entry point and rejects an
   assert.equal(looksLikeAgentbox("node /opt/my-agentbox/run.js"), false);
   assert.equal(looksLikeAgentbox("/usr/bin/postgres -D /var/lib/postgres"), false);
   assert.equal(looksLikeAgentbox("sshd: dinesh@pts/0"), false);
+});
+
+test("an upgrade start is a pre-existing database on a server with no id yet, whatever the database path", () => {
+  assert.equal(isUpgradeStart(true, true), true, "a fresh server id on an existing database is an upgrade, including the AGENTBOX_DB path");
+  assert.equal(isUpgradeStart(true, false), false, "a fresh install with no prior database is not an upgrade");
+  assert.equal(isUpgradeStart(false, true), false, "a server that already has an id is not re-upgraded");
 });
 
 test("MAX_LIFETIME_SECONDS defaults to one day, accepts zero to disable the cap, and refuses a negative value", () => {

@@ -18,6 +18,11 @@ export function looksLikeAgentbox(cmdline: string): boolean {
   return /(?:^|[/\\\s])(?:src[/\\]main\.ts|dist[/\\]src[/\\]main\.js|bin[/\\]agentbox\.js\s+serve)(?:\s|$)|(?:^|\/)agentbox\s+serve/.test(cmdline);
 }
 
+// Whether this start is an in-place upgrade rather than a fresh install: a database that already existed, opened by a server that has no id yet (so it predates per-server labels). Independent of the database's path, so it also catches the Docker image's AGENTBOX_DB.
+export function isUpgradeStart(freshServer: boolean, databaseExisted: boolean): boolean {
+  return freshServer && databaseExisted;
+}
+
 /**
  * Where the SQLite file lives: AGENTBOX_DB when set, else the legacy ./data/agentbox.db when it already exists
  * (so an existing install keeps its data), else the per-user default under XDG_DATA_HOME or ~/.local/share.
