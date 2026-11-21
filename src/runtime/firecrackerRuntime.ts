@@ -183,7 +183,8 @@ export class FirecrackerRuntime implements SandboxRuntime {
     return [];
   }
 
-  egressKept(): boolean {
+  // The firecracker runtime has no egress proxy, so a networked sandbox never reaches here.
+  async readoptEgress(): Promise<boolean> {
     return false;
   }
 

@@ -1,11 +1,11 @@
 import { randomBytes } from "node:crypto";
 import Docker from "dockerode";
 import { Writable } from "node:stream";
-import { ConflictError, NotFoundError, RuntimeUnavailableError, ValidationError } from "../errors.js";
+import { ConflictError, NotFoundError, RuntimeUnavailableError, ServiceUnavailableError, ValidationError } from "../errors.js";
 import { logFor, type Logger } from "../log.js";
 import type { SandboxLimits } from "../models/sandbox.js";
 import { CA_DIR, type EgressAttachment, type EgressProxyManager } from "./egressProxy.js";
-import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime, SandboxUsage, RuntimeExecResult } from "./sandboxRuntime.js";
+import type { DeniedRequest, EgressPolicy, ExecOptions, OutputListener, SandboxRuntime, SandboxUsage, RuntimeExecResult, SecretHeader } from "./sandboxRuntime.js";
 
 const WORKSPACE = "/workspace";
 // uid:gid of "nobody" in Debian based images. The sandbox never runs as root (S5).
@@ -118,8 +118,15 @@ export class GvisorDockerRuntime implements SandboxRuntime {
   async start(sandboxId: string, limits: SandboxLimits, image: string, egress?: EgressPolicy): Promise<string> {
     let attachment: EgressAttachment | undefined;
     if (egress !== undefined) {
-      if (!this.egress.available) throw new ValidationError(`allowHosts is not available: ${this.egress.unavailableReason}`);
-      attachment = await this.egress.attach(sandboxId, egress);
+      if (!this.egress.available) throw new ServiceUnavailableError(`egress is not available: ${this.egress.unavailableReason}`);
+      try {
+        attachment = await this.egress.attach(sandboxId, egress);
+      } catch (e) {
+        // A failed attach may mean the proxy died since the last reaper tick; mark egress unavailable so this is a 503, not a 500.
+        await this.egress.ensureHealthy();
+        if (!this.egress.available) throw new ServiceUnavailableError(`egress is not available: ${this.egress.unavailableReason}`);
+        throw e;
+      }
     }
     try {
       return await this.createAndStart(sandboxId, limits, image, attachment);
@@ -198,8 +205,8 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     if (r.exitCode !== 0) throw new Error(`could not write the deadline: ${r.stderr.toString("utf8").trim()}`);
   }
 
-  egressKept(): boolean {
-    return this.egress.reused;
+  async readoptEgress(sandboxId: string, handle: string, allowHosts: string[], secrets: Record<string, SecretHeader>): Promise<boolean> {
+    return this.egress.readopt(sandboxId, handle, allowHosts, secrets);
   }
 
   // The proxy stays up so sandboxes adopted by the next server run keep their network.

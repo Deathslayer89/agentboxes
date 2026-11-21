@@ -45,11 +45,11 @@ export class FakeRuntime implements SandboxRuntime {
     return Object.fromEntries(handles.filter((h) => this.containers.has(h)).map((h) => [h, { cpuPercent: 12.5, memoryMb: 64 }]));
   }
 
-  // What egressKept() answers; tests flip it to simulate a lost proxy.
-  egressKeptAcrossRestart = true;
+  // What readoptEgress() answers; tests flip it to simulate a policy that cannot be rebuilt.
+  egressReadoptSucceeds = true;
 
-  egressKept(): boolean {
-    return this.egressKeptAcrossRestart;
+  async readoptEgress(): Promise<boolean> {
+    return this.egressReadoptSucceeds;
   }
 
   async shutdown(): Promise<void> {}

@@ -1,10 +1,20 @@
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type Docker from "dockerode";
 import { logFor, type Logger } from "../log.js";
 import type { SettingsRepository } from "../repositories/sqliteStore.js";
-import type { DeniedRequest, EgressPolicy } from "./sandboxRuntime.js";
+import { loadOrCreateProxyCa, type ProxyCa } from "./proxyCa.js";
+import type { DeniedRequest, EgressPolicy, SecretHeader } from "./sandboxRuntime.js";
+
+// What the proxy needs to enforce one sandbox's policy, kept so it can be re-pushed when the server restarts.
+interface StoredPolicy {
+  token: string;
+  subnet: string | undefined;
+  allowHosts: string[];
+  secrets: Record<string, SecretHeader>;
+}
 
 export interface EgressAttachment {
   // Name of the sandbox's own isolated network.
@@ -20,12 +30,14 @@ const CONTAINER = "agentbox-egress-proxy";
 const PROXY_PORT = 3128;
 const CONTROL_PORT = 3129;
 const LABEL_PROXY = "agentbox.proxy";
+// The id of the server that owns a network, so a second server on the host never removes this one's networks.
+const LABEL_SERVER = "agentbox.server";
 const ADMIN_TOKEN_SETTING = "egressProxy.adminToken";
 const LABEL_SOURCE = "agentbox.proxy.source";
 // On networks; the value is the sandbox id.
 export const LABEL_NETWORK = "agentbox.network";
 const SOURCE_DIR = fileURLToPath(new URL("../../proxy/", import.meta.url));
-const SOURCE_FILES = ["Dockerfile", "policy.mjs", "certs.mjs", "server.mjs", "main.mjs"];
+const SOURCE_FILES = ["Dockerfile", "policy.mjs", "certs.mjs", "leafs.mjs", "server.mjs", "main.mjs"];
 // Where the CA certificate and the combined bundle are written inside a sandbox with secrets.
 export const CA_DIR = "/tmp/agentbox";
 const MB = 1024 * 1024;
@@ -41,7 +53,9 @@ export class EgressProxyManager {
   private containerId: string | undefined;
   private controlUrl: string | undefined;
   private caPem: string | undefined;
-  // Set when the allowlist feature cannot work on this machine; create() then refuses allowHosts.
+  private ca: ProxyCa | undefined;
+  private readonly caDir: string;
+  // Set when the allowlist feature cannot work, at startup or after the proxy crashes; create() then refuses allowHosts.
   unavailableReason: string | undefined;
   // True when init() found the previous proxy container still running and kept it, with its policies intact.
   reused = false;
@@ -50,8 +64,11 @@ export class EgressProxyManager {
     private readonly docker: Docker,
     private readonly settings: SettingsRepository,
     private readonly serverId: string,
+    dataDir: string,
     private readonly log: Logger = logFor("proxy"),
-  ) {}
+  ) {
+    this.caDir = join(dataDir, `proxy-ca-${serverId}`);
+  }
 
   get available(): boolean {
     return this.unavailableReason === undefined;
@@ -72,13 +89,14 @@ export class EgressProxyManager {
       const source = await this.buildImage();
       if (await this.reuseRunning(source)) {
         this.log.info({ container: this.containerId?.slice(0, 12) }, "egress proxy from the previous run reused");
-        return;
+      } else {
+        await this.removeLeftovers();
+        this.adminToken = randomBytes(24).toString("hex");
+        this.settings.set(ADMIN_TOKEN_SETTING, this.adminToken);
+        await this.startContainer();
+        this.log.info({ container: this.containerId?.slice(0, 12), control: this.controlUrl }, "egress proxy started");
       }
-      await this.removeLeftovers();
-      this.adminToken = randomBytes(24).toString("hex");
-      this.settings.set(ADMIN_TOKEN_SETTING, this.adminToken);
-      await this.startContainer();
-      this.log.info({ container: this.containerId?.slice(0, 12), control: this.controlUrl }, "egress proxy started");
+      await this.configureProxy();
     } catch (e) {
       this.unavailableReason = `the egress proxy could not start: ${e instanceof Error ? e.message : String(e)}`;
       this.log.warn({ err: e }, "egress proxy could not start");
@@ -104,9 +122,43 @@ export class EgressProxyManager {
       this.controlUrl = undefined;
       return false;
     }
-    this.caPem = await (await this.control("GET", "/ca")).text();
     this.reused = true;
     return true;
+  }
+
+  // Loads the server's CA and pushes it to the proxy over the control API.
+  private async configureProxy(): Promise<void> {
+    this.ca ??= await loadOrCreateProxyCa(this.caDir);
+    await this.control("PUT", "/ca", { key: this.ca.key, cert: this.ca.cert });
+    this.caPem = this.ca.cert;
+  }
+
+  /**
+   * Reaper-tick check: if the proxy the server started is no longer running, it crashed (Docker is not told to restart
+   * it). Mark egress unavailable so new allowlisted or secret creates are refused with a clear reason; existing
+   * networked sandboxes keep running without egress until the server is restarted, which re-attaches them.
+   */
+  async ensureHealthy(): Promise<void> {
+    if (this.containerId === undefined || !this.available) return;
+    let running = false;
+    try {
+      running = ((await this.docker.getContainer(this.containerId).inspect()) as { State: { Running: boolean } }).State.Running;
+    } catch {
+      running = false; // the container is gone
+    }
+    if (!running) {
+      this.unavailableReason = "the egress proxy has stopped; restart the server to restore egress for networked sandboxes";
+      this.log.error("egress proxy has stopped; new allowlisted or secret sandboxes are refused until the server is restarted");
+    }
+  }
+
+  // Connects the proxy to a sandbox's network at its pinned IP; a no-op when it is already connected there.
+  private async connectAtPinnedIp(sandboxId: string, subnet: string): Promise<void> {
+    try {
+      await this.docker.getNetwork(`agentbox-${sandboxId}`).connect({ Container: this.proxyId, EndpointConfig: { IPAMConfig: { IPv4Address: secondHost(subnet) } } });
+    } catch (e) {
+      if (!isAlreadyConnected(e)) throw e;
+    }
   }
 
   // Creates the network, puts the proxy on it, registers the policy and returns what the sandbox needs.
@@ -117,17 +169,18 @@ export class EgressProxyManager {
       Driver: "bridge",
       Internal: true,
       Options: { "com.docker.network.bridge.gateway_mode_ipv4": "isolated" },
-      Labels: { [LABEL_NETWORK]: sandboxId },
+      Labels: { [LABEL_NETWORK]: sandboxId, [LABEL_SERVER]: this.serverId },
     });
     try {
-      await network.connect({ Container: this.proxyId });
-      const info = (await network.inspect()) as { Containers: Record<string, { IPv4Address: string }>; IPAM: { Config: Array<{ Subnet: string }> } };
-      const proxyIp = info.Containers[this.proxyId]?.IPv4Address.split("/")[0];
-      const subnet = info.IPAM.Config[0]?.Subnet;
-      if (proxyIp === undefined || subnet === undefined) throw new Error("proxy has no address on the sandbox network");
+      const subnet = ((await network.inspect()) as { IPAM: { Config: Array<{ Subnet: string }> } }).IPAM.Config[0]?.Subnet;
+      if (subnet === undefined) throw new Error("sandbox network has no subnet");
+      // Pin the proxy to a fixed address on this network, so when the server restarts and re-attaches it the sandbox finds it at the same IP.
+      const proxyIp = secondHost(subnet);
+      await network.connect({ Container: this.proxyId, EndpointConfig: { IPAMConfig: { IPv4Address: proxyIp } } });
       // The token is bound to the network's subnet, so it is useless from anywhere but this sandbox.
       const token = randomBytes(16).toString("hex");
-      await this.control("PUT", `/policies/${sandboxId}`, { token, subnet, allowHosts: policy.allowHosts, secrets: policy.secrets });
+      const stored: StoredPolicy = { token, subnet, allowHosts: policy.allowHosts, secrets: policy.secrets };
+      await this.control("PUT", `/policies/${sandboxId}`, stored);
       const proxyUrl = `http://${sandboxId}:${token}@${proxyIp}:${PROXY_PORT}`;
       const env = ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"].map((key) => `${key}=${proxyUrl}`);
       // The sandbox's own loopback never goes through the proxy, so a dev server or a test server inside keeps working.
@@ -142,6 +195,27 @@ export class EgressProxyManager {
     } catch (e) {
       await this.detach(sandboxId).catch(() => {});
       throw e;
+    }
+  }
+
+  /**
+   * Re-registers a sandbox adopted after a server restart: reads back the token from the sandbox's container
+   * environment and the subnet from its network (neither survives in memory), re-attaches the proxy to the network at
+   * the pinned IP, and pushes the policy again so a freshly started proxy enforces it. Returns false when the policy
+   * cannot be rebuilt, so the caller can destroy the sandbox rather than leave it without egress.
+   */
+  async readopt(sandboxId: string, handle: string, allowHosts: string[], secrets: Record<string, SecretHeader>): Promise<boolean> {
+    try {
+      const env = ((await this.docker.getContainer(handle).inspect()) as { Config: { Env: string[] } }).Config.Env;
+      const token = env.find((e) => e.startsWith("HTTP_PROXY="))?.match(/\/\/[^:]+:([^@]+)@/)?.[1];
+      const subnet = ((await this.docker.getNetwork(`agentbox-${sandboxId}`).inspect()) as { IPAM: { Config: Array<{ Subnet: string }> } }).IPAM.Config[0]?.Subnet;
+      if (token === undefined || subnet === undefined) return false;
+      const stored: StoredPolicy = { token, subnet, allowHosts, secrets };
+      await this.connectAtPinnedIp(sandboxId, subnet);
+      await this.control("PUT", `/policies/${sandboxId}`, stored);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -191,13 +265,31 @@ export class EgressProxyManager {
     return source;
   }
 
-  // A proxy container from a previous run has a stale token; networks without containers are leftovers too.
+  /**
+   * Removes the egress proxy and sandbox networks from a version before per-server labels: the proxy container named
+   * exactly `agentbox-egress-proxy` (the new name carries the server id) and the networks that carry an agentbox
+   * network label but no server id. Returns the names removed, for the log.
+   */
+  async removePreUpgradeProxy(): Promise<string[]> {
+    const removed: string[] = [];
+    for (const c of await this.docker.listContainers({ all: true, filters: { name: [`^/${CONTAINER}$`] } })) {
+      await this.docker.getContainer(c.Id).remove({ force: true }).catch(() => {});
+      removed.push(c.Names[0] ?? c.Id);
+    }
+    for (const n of await this.docker.listNetworks({ filters: { label: [LABEL_NETWORK] } })) {
+      if (n.Labels?.[LABEL_SERVER] !== undefined) continue; // a current server's network, not a pre-upgrade one
+      await this.docker.getNetwork(n.Id).remove().catch(() => {});
+      removed.push(n.Name);
+    }
+    return removed;
+  }
+
+  // A proxy container from a previous run has a stale token; this server's networks without containers are leftovers too.
   private async removeLeftovers(): Promise<void> {
-    // Only this server's own old proxy; another server's proxy is left alone.
     for (const c of await this.docker.listContainers({ all: true, filters: { label: [`${LABEL_PROXY}=${this.serverId}`] } })) {
       await this.docker.getContainer(c.Id).remove({ force: true });
     }
-    for (const n of await this.docker.listNetworks({ filters: { label: [LABEL_NETWORK] } })) {
+    for (const n of await this.docker.listNetworks({ filters: { label: [`${LABEL_SERVER}=${this.serverId}`] } })) {
       const info = (await this.docker.getNetwork(n.Id).inspect()) as { Containers?: Record<string, unknown> };
       if (Object.keys(info.Containers ?? {}).length === 0) await this.docker.getNetwork(n.Id).remove();
     }
@@ -218,6 +310,8 @@ export class EgressProxyManager {
         Memory: 256 * MB,
         MemorySwap: 256 * MB,
         PidsLimit: 128,
+        // A crash does not restart the proxy; the server marks egress unavailable and a server restart re-attaches sandboxes.
+        RestartPolicy: { Name: "no" },
       },
     });
     await container.start();
@@ -227,7 +321,6 @@ export class EgressProxyManager {
     if (!ip) throw new Error("proxy container has no address on the default bridge");
     this.controlUrl = `http://${ip}:${CONTROL_PORT}`;
     await this.waitUntilHealthy();
-    this.caPem = await (await this.control("GET", "/ca")).text();
   }
 
   private async waitUntilHealthy(): Promise<void> {
@@ -252,6 +345,19 @@ export class EgressProxyManager {
   }
 }
 
+// The second host address of an IPv4 "a.b.c.d/n" subnet (the first, .1, is the gateway), for a stable proxy IP per sandbox network.
+function secondHost(subnet: string): string {
+  const [a = 0, b = 0, c = 0, d = 0] = (subnet.split("/")[0] ?? "").split(".").map(Number);
+  const n = (((a << 24) | (b << 16) | (c << 8) | d) + 2) >>> 0;
+  return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
+}
+
 function isNotFound(e: unknown): boolean {
   return typeof e === "object" && e !== null && "statusCode" in e && e.statusCode === 404;
+}
+
+// Docker reports an "already exists in network" error when the proxy is already connected; re-attaching is then a no-op.
+export function isAlreadyConnected(e: unknown): boolean {
+  const message = typeof e === "object" && e !== null && "message" in e ? String((e as { message: unknown }).message) : "";
+  return /already (exists in network|connected to network)/i.test(message);
 }

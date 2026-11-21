@@ -3,7 +3,7 @@ import { startProxy } from "./server.mjs";
 
 // An unhandled rejection is logged and the proxy keeps serving, since every known async path is already handled.
 process.on("unhandledRejection", (err) => console.error("agentbox egress proxy: unhandledRejection:", err));
-// An uncaughtException leaves the process in an undefined state, so it exits and Docker's restart policy brings it back clean.
+// An uncaughtException leaves the process in an undefined state, so it exits; the server then marks egress unavailable until it is restarted.
 process.on("uncaughtException", (err) => {
   console.error("agentbox egress proxy: uncaughtException:", err);
   process.exit(1);

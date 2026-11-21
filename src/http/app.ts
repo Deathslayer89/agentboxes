@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { ConflictError, DomainError, ForbiddenError, LimitExceededError, NotFoundError, PayloadTooLargeError, UnauthorizedError, ValidationError } from "../errors.js";
+import { ConflictError, DomainError, ForbiddenError, LimitExceededError, NotFoundError, PayloadTooLargeError, ServiceUnavailableError, UnauthorizedError, ValidationError } from "../errors.js";
 import type { Logger } from "../log.js";
 import { LOCAL_OWNER, type ApiKey } from "../models/apiKey.js";
 import type { Sandbox } from "../models/sandbox.js";
@@ -32,6 +32,7 @@ function statusFor(err: DomainError): ContentfulStatusCode {
   if (err instanceof ConflictError) return 409;
   if (err instanceof PayloadTooLargeError) return 413;
   if (err instanceof LimitExceededError) return 429;
+  if (err instanceof ServiceUnavailableError) return 503;
   return 500;
 }
 

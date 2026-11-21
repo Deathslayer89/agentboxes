@@ -11,7 +11,7 @@ import os from "node:os";
 import test, { after, before } from "node:test";
 import Docker from "dockerode";
 import { SystemClock } from "../../src/clock.js";
-import { ConflictError } from "../../src/errors.js";
+import { ConflictError, ServiceUnavailableError } from "../../src/errors.js";
 import { loadConfig } from "../../src/config.js";
 import { RandomIdGenerator } from "../../src/id.js";
 import { InMemorySettings } from "../../src/repositories/inMemorySettings.js";
@@ -26,7 +26,9 @@ import { WarmPool, WarmPools } from "../../src/services/warmPool.js";
 const config = loadConfig({ ...process.env, DEFAULT_TTL_SECONDS: "120" });
 const docker = new Docker();
 const SERVER_ID = "srvtest_main";
-const runtime = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker, new InMemorySettings(), SERVER_ID), SERVER_ID);
+const caBase = mkdtempSync(join(tmpdir(), "agentbox-test-ca-"));
+const egress = new EgressProxyManager(docker, new InMemorySettings(), SERVER_ID, caBase);
+const runtime = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, egress, SERVER_ID);
 const templates = new DockerTemplateRepository(docker);
 const service = new SandboxService(new InMemorySandboxRepository(), templates, runtime, config, new SystemClock(), new RandomIdGenerator("sbxtest_"), new WarmPools());
 
@@ -39,9 +41,16 @@ before(async () => {
   id = (await service.create()).id;
 });
 
+// Removes a test server's proxy container and its sandbox networks, which runtime.shutdown() deliberately leaves running.
+const removeServer = async (sid: string) => {
+  for (const c of await docker.listContainers({ all: true, filters: { label: [`agentbox.proxy=${sid}`] } })) await docker.getContainer(c.Id).remove({ force: true }).catch(() => {});
+  for (const n of await docker.listNetworks({ filters: { label: [`agentbox.server=${sid}`] } })) await docker.getNetwork(n.Id).remove().catch(() => {});
+};
+
 after(async () => {
   await service.destroy(id);
   await runtime.shutdown();
+  await removeServer(SERVER_ID);
 });
 
 const run = (cmd: string[], timeoutMs?: number) => service.exec(id, timeoutMs === undefined ? { cmd } : { cmd, timeoutMs });
@@ -357,13 +366,17 @@ test("S3: a command that exits 137 on its own leaves the sandbox healthy and ret
 
 test("S3: the process limit contains a fork bomb: the host and other sandboxes go on, and the sandbox is not taken down", async () => {
   const box = await service.create();
-  // RLIMIT_NPROC caps the sandbox user's processes, so forks start failing instead of the bomb growing until the memory cap.
-  const r = await service.exec(box.id, { cmd: ["sh", "-c", "bomb() { bomb | bomb & }; bomb; sleep 30"], timeoutMs: 20_000 });
-  assert.notEqual(r.exitCode, 0);
-  assert.equal((await run(["echo", "still here"])).stdout.trim(), "still here");
-  await service.reap();
-  assert.equal(service.get(box.id).status, "ready");
-  assert.equal((await runtime.listManaged()).find((c) => c.handle === box.handle)?.running, true);
+  try {
+    // RLIMIT_NPROC caps the sandbox user's processes, so forks start failing instead of the bomb growing until the memory cap.
+    const r = await service.exec(box.id, { cmd: ["sh", "-c", "bomb() { bomb | bomb & }; bomb; sleep 30"], timeoutMs: 20_000 });
+    assert.notEqual(r.exitCode, 0);
+    assert.equal((await run(["echo", "still here"])).stdout.trim(), "still here");
+    await service.reap();
+    assert.equal(service.get(box.id).status, "ready");
+    assert.equal((await runtime.listManaged()).find((c) => c.handle === box.handle)?.running, true);
+  } finally {
+    await service.destroy(box.id);
+  }
 });
 
 test("S3: PID 1 reaps orphaned processes, so a long session does not fill the pids limit with zombies", async () => {
@@ -391,7 +404,7 @@ test("the TTL holds while the server is down: PID 1 ends the sandbox at its dead
 test("a second server on the same host leaves this server's sandbox alone", async () => {
   const box = await service.create();
   try {
-    const other = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker, new InMemorySettings(), "srvtest_other"), "srvtest_other");
+    const other = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker, new InMemorySettings(), "srvtest_other", caBase), "srvtest_other");
     await other.init();
     const config2 = loadConfig({ ...process.env, DEFAULT_TTL_SECONDS: "120", POOL_SIZES: "default:0" });
     const service2 = new SandboxService(new InMemorySandboxRepository(), templates, other, config2, new SystemClock(), new RandomIdGenerator("srvtest_other_"), new WarmPools());
@@ -405,6 +418,72 @@ test("a second server on the same host leaves this server's sandbox alone", asyn
   }
 });
 
+test("a proxy crash refuses new networked creates with 503, and a server restart restores egress for existing sandboxes", async () => {
+  const id = "srvtest_crash";
+  const dir = mkdtempSync(join(tmpdir(), "agentbox-crash-"));
+  const path = join(dir, "agentbox.db");
+  const cfg = loadConfig({ ...process.env, DEFAULT_TTL_SECONDS: "300", TEST_API_KEY: "crash-me", AGENTBOX_SECRETS: '{"httpbin.org":"TEST_API_KEY"}' });
+  const make = (store: SqliteStore) => {
+    store.settings.set("server.id", id);
+    const eg = new EgressProxyManager(docker, store.settings, id, dir);
+    const rt = new GvisorDockerRuntime(docker, cfg.runtime, cfg.image, cfg.maxOutputBytes, cfg.maxFileBytes, cfg.maxArchiveBytes, eg, id);
+    return { eg, rt, svc: new SandboxService(store.sandboxes, templates, rt, cfg, new SystemClock(), new RandomIdGenerator("sbxcr_"), new WarmPools()) };
+  };
+  const caCertPath = join(dir, `proxy-ca-${id}`, "ca.crt");
+  const first = new SqliteStore(path);
+  const run1 = make(first);
+  await run1.rt.init();
+  let boxId = "";
+  try {
+    boxId = (await run1.svc.create({ allowHosts: ["example.com"], secrets: ["httpbin.org"] })).id;
+    assert.equal((await fetchStatus(run1.svc, boxId, "https://httpbin.org/bearer")).stdout.trim(), "200");
+    const caBefore = readFileSync(caCertPath, "utf8");
+
+    const [proxyC] = await docker.listContainers({ filters: { label: [`agentbox.proxy=${id}`] } });
+    assert.ok(proxyC, "the proxy is running");
+    await docker.getContainer(proxyC.Id).kill().catch(() => {});
+    // Before any reaper tick, a networked create against the just-killed proxy fails closed with 503 from the create path, not a generic 500.
+    await assert.rejects(
+      run1.svc.create({ allowHosts: ["example.com"] }),
+      (e) => e instanceof ServiceUnavailableError,
+      "a create against the dead proxy is refused with 503 from the create path",
+    );
+    assert.equal(run1.eg.available, false, "that create marked egress unavailable, so later networked creates stay fail-closed");
+    await assert.rejects(
+      run1.svc.create({ allowHosts: ["example.com"] }),
+      (e) => e instanceof ServiceUnavailableError && /egress proxy has stopped/.test(e.message),
+      "once egress is marked unavailable, a networked create is refused with 503 and the reason",
+    );
+    first.close();
+
+    const second = new SqliteStore(path);
+    const run2 = make(second);
+    await run2.rt.init();
+    try {
+      assert.equal(run2.eg.available, true, "egress is available again after the server restarts");
+      assert.deepEqual((await run2.svc.adopt()).adopted, [boxId], "the networked sandbox is readopted");
+      const probe = async (url: string) =>
+        (await run2.svc.exec(boxId, { cmd: ["python", "-c", `import urllib.request\ntry:\n print(urllib.request.urlopen(${JSON.stringify(url)}, timeout=4).status)\nexcept Exception:\n print('down')`], timeoutMs: 8_000 })).stdout.trim();
+      // The replacement proxy comes up at the same IP but a new MAC, so the adopted sandbox keeps a stale neighbour entry until it expires; egress returns within about 40 s.
+      const deadline = Date.now() + 60_000;
+      let plain = "";
+      while (plain !== "200" && Date.now() < deadline) {
+        plain = await probe("https://example.com").catch(() => "");
+        if (plain !== "200") await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      assert.equal(plain, "200", "plain egress comes back within 60 s of the restart");
+      assert.equal(await probe("https://httpbin.org/bearer"), "200", "secret injection works again, so readopt rebuilt the policy with the right token");
+      assert.equal(readFileSync(caCertPath, "utf8"), caBefore, "the persisted CA fingerprint is unchanged across the restart");
+    } finally {
+      for (const s of run2.svc.list()) await run2.svc.destroy(s.id).catch(() => {});
+      second.close();
+    }
+  } finally {
+    await removeServer(id);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("restart: a second server run adopts running sandboxes from the SQLite file and reuses the proxy", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agentbox-restart-"));
   const path = join(dir, "agentbox.db");
@@ -414,7 +493,7 @@ test("restart: a second server run adopts running sandboxes from the SQLite file
       id = "srvtest_restart";
       store.settings.set("server.id", id);
     }
-    const egress = new EgressProxyManager(docker, store.settings, id);
+    const egress = new EgressProxyManager(docker, store.settings, id, dir);
     const rt = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, egress, id);
     await rt.init();
     return { rt, egress, svc: new SandboxService(store.sandboxes, templates, rt, config, new SystemClock(), new RandomIdGenerator("sbxrestart_"), new WarmPools()) };
@@ -436,6 +515,7 @@ test("restart: a second server run adopts running sandboxes from the SQLite file
       const { adopted, lost } = await run2.svc.adopt();
       assert.deepEqual({ adopted: adopted.sort(), lost }, { adopted: [netId, plainId].sort(), lost: [] });
       assert.equal((await run2.svc.exec(plainId, { cmd: ["cat", "kept.txt"] })).stdout, "still here");
+      // The same proxy is reused with its original MAC, so egress works on the very first probe with no settle wait.
       const net = await fetchStatus(run2.svc, netId, "https://pypi.org/simple/pip/");
       assert.equal(net.stdout.trim(), "200", net.stderr);
     } finally {
@@ -443,6 +523,7 @@ test("restart: a second server run adopts running sandboxes from the SQLite file
       second.close();
     }
   } finally {
+    await removeServer("srvtest_restart");
     rmSync(dir, { recursive: true, force: true });
   }
 });

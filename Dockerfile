@@ -13,6 +13,8 @@ RUN npm run build
 
 FROM node:22-bookworm-slim
 WORKDIR /app
+# openssl generates the egress proxy's CA, which the server owns and pushes to the proxy.
+RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist

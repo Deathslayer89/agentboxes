@@ -25,3 +25,6 @@ export class PayloadTooLargeError extends DomainError {}
 
 // gVisor (runsc) is not registered with Docker, or Docker cannot be reached.
 export class RuntimeUnavailableError extends DomainError {}
+
+// A dependency the request needs is temporarily down, for example the egress proxy after a crash.
+export class ServiceUnavailableError extends DomainError {}

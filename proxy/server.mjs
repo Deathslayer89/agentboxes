@@ -4,7 +4,8 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
-import { createCa, issueCert } from "./certs.mjs";
+import { issueCert } from "./certs.mjs";
+import { LeafCache } from "./leafs.mjs";
 import { inSubnet, isPublicAddress, parseProxyAuth, refusalFor, splitHostPort } from "./policy.mjs";
 
 // Denied attempts kept per sandbox; older entries are dropped.
@@ -24,26 +25,18 @@ const LEAF_RENEW_MS = 25 * 24 * 60 * 60 * 1000;
  * The control API listens on controlHost, which main.mjs sets to the default-bridge address so
  * sandbox networks cannot reach it. Options beyond adminToken exist for tests; main.mjs reads
  * production values from the environment.
- * @param {{ adminToken: string, host?: string, controlHost?: string, proxyPort?: number, controlPort?: number, allowPrivateTargets?: boolean, upstreamCa?: string }} options
+ * @param {{ adminToken: string, host?: string, controlHost?: string, proxyPort?: number, controlPort?: number, allowPrivateTargets?: boolean, upstreamCa?: string, ca?: { key: string, cert: string } | null }} options
  */
-export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = host, proxyPort = 0, controlPort = 0, allowPrivateTargets = false, upstreamCa = undefined }) {
+export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = host, proxyPort = 0, controlPort = 0, allowPrivateTargets = false, upstreamCa = undefined, ca = null }) {
   // sandboxId -> { token, subnet, allowHosts, secrets, denied }
   const policies = new Map();
-  const ca = await createCa();
-  // host -> { pending: Promise<{ key, cert }>, issuedAt }, so concurrent requests share one certificate and it can be renewed before expiry
-  const leafs = new Map();
+  // The CA the server owns; null until the server sets it, so the proxy never mints its own and never intercepts before it is configured.
+  let authority = ca;
+  // Per-host leaf certificates, issued from the current CA and shared across concurrent requests, renewed before expiry.
+  const leafs = new LeafCache((auth, target) => issueCert(auth, target), LEAF_RENEW_MS);
 
   function leafFor(target) {
-    const entry = leafs.get(target);
-    // Reuse a cached leaf until it is near its 30-day expiry, so a long-running proxy renews instead of serving an expired cert.
-    if (entry !== undefined && Date.now() - entry.issuedAt < LEAF_RENEW_MS) return entry.pending;
-    // A failed issue is removed from the cache so the next request retries instead of getting the same rejection forever.
-    const pending = issueCert(ca, target).catch((err) => {
-      if (leafs.get(target)?.pending === pending) leafs.delete(target);
-      throw err;
-    });
-    leafs.set(target, { pending, issuedAt: Date.now() });
-    return pending;
+    return leafs.get(authority, target);
   }
 
   // The token must arrive from the sandbox's own network; a token used from anywhere else is refused and logged.
@@ -178,6 +171,12 @@ export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = h
     }
     const secret = policy.secrets[target.toLowerCase()];
     if (secret !== undefined) {
+      if (authority === null) {
+        // No CA to intercept with yet, so fail closed instead of minting a cert the sandbox would not trust.
+        recordDenied(policy, { method: "CONNECT", host: target, port, reason: "proxy has no CA yet" });
+        socket.end("HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\n\r\nagentbox egress proxy: not ready to inject the secret for this host yet\n");
+        return;
+      }
       await intercept(socket, head, { target, port, address: verdict.address, secret });
       return;
     }
@@ -200,10 +199,24 @@ export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = h
     if (!sameString(req.headers.authorization ?? "", `Bearer ${adminToken}`)) return json(401, { error: "bad admin token" });
     const url = new URL(req.url, "http://control");
     const [resource, id, action] = url.pathname.split("/").filter((part) => part !== "");
-    if (req.method === "GET" && resource === "health") return json(200, { ok: true, policies: policies.size });
+    if (req.method === "GET" && resource === "health") return json(200, { ok: true, policies: policies.size, hasCa: authority !== null });
     if (req.method === "GET" && resource === "ca") {
+      if (authority === null) return json(404, { error: "no CA configured" });
       res.writeHead(200, { "content-type": "application/x-pem-file" });
-      return res.end(ca.cert);
+      return res.end(authority.cert);
+    }
+    if (req.method === "PUT" && resource === "ca") {
+      let incoming;
+      try {
+        incoming = JSON.parse(await readBody(req));
+      } catch {
+        return json(400, { error: "body must be valid JSON" });
+      }
+      if (typeof incoming?.key !== "string" || typeof incoming?.cert !== "string") return json(400, { error: "CA needs a key and a cert" });
+      authority = { key: incoming.key, cert: incoming.cert };
+      // Leaf certs were signed by the previous CA, so they are dropped and reissued under the new one.
+      leafs.clear();
+      return json(200, { ok: true });
     }
     if (resource === "policies" && id !== undefined) {
       if (req.method === "PUT" && action === undefined) {
@@ -213,6 +226,7 @@ export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = h
         } catch {
           return json(400, { error: "body must be valid JSON" });
         }
+        if (typeof body !== "object" || body === null) return json(400, { error: "body must be a JSON object" });
         policies.set(id, {
           token: body.token,
           subnet: typeof body.subnet === "string" ? body.subnet : undefined,
@@ -239,7 +253,7 @@ export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = h
   return {
     proxyPort: proxy.address().port,
     controlPort: control.address().port,
-    caCert: ca.cert,
+    caCert: authority?.cert ?? null,
     close: () => Promise.all([closeServer(proxy), closeServer(control), closeServer(intercepted)]),
   };
 }

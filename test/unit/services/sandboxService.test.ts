@@ -326,7 +326,7 @@ test("an exec timeout longer than the time left before the lifetime cap says to 
   );
 });
 
-test("adopt after a restart: running containers come back ready, gone ones are expired, networked ones depend on the proxy", async () => {
+test("adopt after a restart: running containers come back ready, gone ones are expired, networked ones are destroyed if egress cannot be re-registered", async () => {
   const { service, runtime } = makeService({ OPENAI_API_KEY: "sk" });
   const plain = await service.create();
   const networked = await service.create({ allowHosts: ["pypi.org"] });
@@ -342,13 +342,33 @@ test("adopt after a restart: running containers come back ready, gone ones are e
   assert.equal(service.get(plain.id).activeExecs, 0);
   assert.equal(service.get(vanished.id).status, "expired");
 
-  runtime.egressKeptAcrossRestart = false;
+  runtime.egressReadoptSucceeds = false;
   result = await service.adopt();
   assert.deepEqual(result, { adopted: [plain.id], lost: [networked.id] });
   assert.equal(service.get(networked.id).status, "destroyed");
   assert.equal(runtime.containers.has(networked.handle ?? ""), false);
 });
 
+test("adopt destroys a networked sandbox whose egress policy cannot be re-registered, so it is not left unable to recover", async () => {
+  const { service, runtime } = makeService({ OPENAI_API_KEY: "sk" });
+  const networked = await service.create({ allowHosts: ["pypi.org"] });
+  runtime.egressReadoptSucceeds = false;
+  const result = await service.adopt();
+  assert.deepEqual(result, { adopted: [], lost: [networked.id] });
+  assert.equal(service.get(networked.id).status, "destroyed");
+});
+
+test("adopt destroys a networked sandbox whose owner key has lost access to a secret it used, so revocation applies on restart", async () => {
+  const { service, runtime, config } = makeService({ AGENTBOX_API_KEYS: "alice:key-alice", OPENAI_API_KEY: "sk", AGENTBOX_SECRETS: '{"api.openai.com":{"env":"OPENAI_API_KEY","keys":["alice"]}}' });
+  const box = await service.create({ secrets: ["api.openai.com"] }, "alice");
+  const handle = box.handle;
+  // The operator removes alice from the secret's keys, then the server restarts.
+  config.secrets["api.openai.com"]!.keys = [];
+  const result = await service.adopt();
+  assert.deepEqual(result, { adopted: [], lost: [box.id] });
+  assert.equal(service.get(box.id).status, "destroyed");
+  assert.equal(runtime.containers.has(handle ?? ""), false);
+});
 test("create and extend hand the runtime the sandbox's deadline, so it can end itself while the server is down", async () => {
   const { service, runtime, clock } = makeService();
   const box = await service.create({ ttlSeconds: 60 });

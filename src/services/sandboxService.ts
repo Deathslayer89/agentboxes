@@ -154,6 +154,26 @@ export class SandboxService {
     return { policy: { allowHosts, secrets }, network: { allowHosts, secretHosts: Object.keys(secrets) } };
   }
 
+  // Re-registers an adopted networked sandbox's egress policy with the proxy so it enforces the allowlist and injects secrets again after a restart. False when a secret it used is gone, is no longer allowed to its owner key, or the token cannot be read back.
+  private async reregisterEgress(sandbox: Sandbox): Promise<boolean> {
+    const secrets = this.secretsFor(sandbox.network?.secretHosts ?? [], sandbox.owner);
+    if (secrets === undefined) return false;
+    return this.runtime.readoptEgress(sandbox.id, sandbox.handle as string, sandbox.network?.allowHosts ?? [], secrets);
+  }
+
+  // Resolves secret headers by host from the current config, applying the same per-key check as create, so a key that has lost access to a secret does not keep it across a restart. Undefined if any host is no longer configured, or, when auth is on, its owner key is no longer in that secret's keys.
+  private secretsFor(secretHosts: string[], owner: string): Record<string, SecretHeader> | undefined {
+    const authOn = this.config.apiKeys.length > 0;
+    const secrets: Record<string, SecretHeader> = {};
+    for (const host of secretHosts) {
+      const secret = this.config.secrets[host];
+      if (secret === undefined) return undefined;
+      if (authOn && !(secret.keys?.includes(owner) ?? false)) return undefined;
+      secrets[host] = { header: secret.header, value: secret.value };
+    }
+    return secrets;
+  }
+
   // Live sandboxes of one owner (or all) with their current CPU and memory, plus the host's own numbers.
   async usage(owner?: string): Promise<UsageReport> {
     const live = this.list(false, owner).filter((s) => s.handle !== undefined);
@@ -370,9 +390,10 @@ export class SandboxService {
   }
 
   /**
-   * After a server restart: a record whose container still runs becomes ready again; one
-   * whose container is gone is marked expired. Sandboxes with a network are destroyed
-   * when the proxy did not survive, since their policies went with it.
+   * After a server restart: a record whose container still runs becomes ready again; one whose container is gone is
+   * marked expired. A sandbox with a network is re-registered with the proxy; it is destroyed only when its policy
+   * cannot be rebuilt, because a secret it used is no longer configured, its key has lost access to that secret, or the
+   * token cannot be read back.
    */
   async adopt(): Promise<{ adopted: string[]; lost: string[] }> {
     const running = new Set((await this.runtime.listManaged()).map((c) => c.handle));
@@ -381,7 +402,13 @@ export class SandboxService {
     for (const sandbox of this.sandboxes.findAll()) {
       if (isGone(sandbox)) continue;
       const alive = sandbox.handle !== undefined && running.has(sandbox.handle);
-      if (alive && (sandbox.network === undefined || this.runtime.egressKept())) {
+      if (alive) {
+        if (sandbox.network !== undefined && !(await this.reregisterEgress(sandbox))) {
+          this.log.warn({ sandbox: sandbox.id, owner: sandbox.owner }, "egress for an adopted sandbox could not be re-registered; destroying it rather than leaving it without egress");
+          await this.remove(sandbox, "destroyed");
+          lost.push(sandbox.id);
+          continue;
+        }
         sandbox.status = "ready";
         sandbox.activeExecs = 0;
         this.sandboxes.save(sandbox);
@@ -389,13 +416,10 @@ export class SandboxService {
         this.log.info({ sandbox: sandbox.id, owner: sandbox.owner, expiresAt: sandbox.expiresAt }, "sandbox adopted from the previous run");
         continue;
       }
-      if (alive) await this.remove(sandbox, "destroyed");
-      else {
-        sandbox.status = "expired";
-        sandbox.handle = undefined;
-        this.sandboxes.save(sandbox);
-        this.log.info({ sandbox: sandbox.id, owner: sandbox.owner }, "sandbox from the previous run is gone");
-      }
+      sandbox.status = "expired";
+      sandbox.handle = undefined;
+      this.sandboxes.save(sandbox);
+      this.log.info({ sandbox: sandbox.id, owner: sandbox.owner }, "sandbox from the previous run is gone");
       lost.push(sandbox.id);
     }
     return { adopted, lost };

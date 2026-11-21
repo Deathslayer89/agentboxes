@@ -68,10 +68,11 @@ if (serverId === undefined) {
   serverId = randomBytes(8).toString("hex");
   store.settings.set("server.id", serverId);
 }
+const egress = new EgressProxyManager(docker, store.settings, serverId, dirname(config.dbPath));
 const runtime =
   config.runtime === "firecracker"
     ? new FirecrackerRuntime(dirname(config.dbPath), config.defaults, config.maxOutputBytes)
-    : new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker, store.settings, serverId), serverId);
+    : new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, egress, serverId);
 const templates = new DockerTemplateRepository(docker);
 
 // Refuse to start without gVisor instead of silently running on runc.
@@ -117,6 +118,7 @@ for (const [template, s] of Object.entries(pools.stats())) log.info({ template, 
 // The service logs each expiry, orphan and dead pool container itself.
 const reaper = setInterval(() => {
   service.reap().catch((err: unknown) => log.error({ err }, "reaper pass failed"));
+  egress.ensureHealthy().catch((err: unknown) => log.error({ err }, "egress health check failed"));
 }, config.reaperIntervalMs);
 
 if (config.apiKeys.length === 0) {

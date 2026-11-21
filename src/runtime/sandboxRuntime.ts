@@ -104,8 +104,8 @@ export interface SandboxRuntime {
   // Current CPU and memory of the given containers; one that is gone is left out.
   usage(handles: string[]): Promise<Record<string, SandboxUsage>>;
 
-  // True when sandboxes with a network from before a server restart still have their proxy policies.
-  egressKept(): boolean;
+  // Re-register an adopted sandbox's egress policy with the proxy after a restart, so the allowlist and secrets are enforced again. False when it cannot be rebuilt.
+  readoptEgress(sandboxId: string, handle: string, allowHosts: string[], secrets: Record<string, SecretHeader>): Promise<boolean>;
 
   // Stop anything the backend runs for itself. Called once at shutdown; the egress proxy is left running for adopted sandboxes.
   shutdown(): Promise<void>;

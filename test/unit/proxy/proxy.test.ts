@@ -5,12 +5,26 @@ import https from "node:https";
 import net from "node:net";
 import tls from "node:tls";
 import test, { after, before } from "node:test";
-import { createCa, issueCert } from "../../../proxy/certs.mjs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { issueCert } from "../../../proxy/certs.mjs";
 import { inSubnet, isPublicAddress } from "../../../proxy/policy.mjs";
 import { startProxy } from "../../../proxy/server.mjs";
+import { loadOrCreateProxyCa } from "../../../src/runtime/proxyCa.js";
 
 // The proxy on loopback with allowPrivateTargets, so a local echo server can stand in for the internet.
 const hasOpenssl = spawnSync("openssl", ["version"]).status === 0;
+
+// A throwaway CA for tests, from the server's own generator in a temp dir, so production keeps a single CA generator.
+const freshCa = async () => {
+  const dir = mkdtempSync(join(tmpdir(), "proxy-test-ca-"));
+  try {
+    return await loadOrCreateProxyCa(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
 
 // Answers with the method, url and headers it received, with a content-length so the body is not chunked, then closes.
 function echoHandler(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -73,7 +87,7 @@ before(async () => {
   upstream = http.createServer(echoHandler);
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   upstreamPort = (upstream.address() as net.AddressInfo).port;
-  proxy = await startProxy({ adminToken: "adm", host: "127.0.0.1", allowPrivateTargets: true });
+  proxy = await startProxy({ adminToken: "adm", host: "127.0.0.1", allowPrivateTargets: true, ca: hasOpenssl ? await freshCa() : null });
   await control(proxy, "PUT", "/policies/sbx_open", { token: "tok", allowHosts: [`127.0.0.1:${upstreamPort}`] });
 });
 
@@ -85,7 +99,32 @@ after(async () => {
 test("the control API needs the admin token", async () => {
   assert.equal((await control(proxy, "GET", "/health", undefined, "wrong")).status, 401);
   assert.equal((await control(proxy, "GET", "/health")).status, 200);
-  assert.match(await (await control(proxy, "GET", "/ca")).text(), /BEGIN CERTIFICATE/);
+  if (hasOpenssl) assert.match(await (await control(proxy, "GET", "/ca")).text(), /BEGIN CERTIFICATE/);
+});
+
+test("without a CA the proxy refuses to intercept a secret host instead of minting its own certificate", async () => {
+  const p = await startProxy({ adminToken: "adm", host: "127.0.0.1", allowPrivateTargets: true });
+  try {
+    await control(p, "PUT", "/policies/s", { token: "t", allowHosts: ["127.0.0.1"], secrets: { "127.0.0.1": "Bearer x" } });
+    assert.equal((await control(p, "GET", "/ca")).status, 404, "no CA is configured");
+    const { status, socket } = await connectTunnel(p, "127.0.0.1:443", { "proxy-authorization": basic("s", "t") });
+    socket.destroy();
+    assert.equal(status, 503, "a secret host is refused until the server pushes a CA");
+  } finally {
+    await p.close();
+  }
+});
+
+test("a CA pushed over the control API is stored and served back", { skip: !hasOpenssl }, async () => {
+  const p = await startProxy({ adminToken: "adm", host: "127.0.0.1" });
+  try {
+    const ca = await freshCa();
+    assert.equal((await control(p, "PUT", "/ca", ca)).status, 200);
+    assert.match(await (await control(p, "GET", "/ca")).text(), /BEGIN CERTIFICATE/);
+    assert.equal(await (await control(p, "GET", "/ca")).text(), ca.cert);
+  } finally {
+    await p.close();
+  }
 });
 
 test("an upstream answering with an out-of-range status is turned into a 502, and the proxy keeps serving", async () => {
@@ -111,6 +150,19 @@ test("a malformed policy body is answered with 400 and does not take the proxy d
     const res = await fetch(`http://127.0.0.1:${p.controlPort}/policies/s`, { method: "PUT", headers: { authorization: "Bearer adm" }, body: "{ not json" });
     assert.equal(res.status, 400);
     assert.equal((await control(p, "GET", "/health")).status, 200, "the proxy keeps serving after a bad request");
+  } finally {
+    await p.close();
+  }
+});
+
+test("a policy body that is valid JSON but not an object is answered with 400 and does not hang the request", async () => {
+  const p = await startProxy({ adminToken: "adm", host: "127.0.0.1" });
+  try {
+    for (const body of ["null", "42", '"nope"']) {
+      const res = await fetch(`http://127.0.0.1:${p.controlPort}/policies/s`, { method: "PUT", headers: { authorization: "Bearer adm" }, body });
+      assert.equal(res.status, 400, `body ${body} is refused`);
+    }
+    assert.equal((await control(p, "GET", "/health")).status, 200, "the proxy keeps serving after a non-object body");
   } finally {
     await p.close();
   }
@@ -240,18 +292,18 @@ test("a mapped-IPv6 literal for a private address is refused even when allowlist
 });
 
 test("a host with a secret is intercepted: the proxy's own certificate is presented and the secret header is set", { skip: !hasOpenssl }, async () => {
-  const upstreamCa = await createCa("test upstream CA");
+  const upstreamCa = await freshCa();
   const leaf = await issueCert(upstreamCa, "127.0.0.1");
   const secureUpstream = https.createServer({ key: leaf.key, cert: leaf.cert }, echoHandler);
   await new Promise<void>((resolve) => secureUpstream.listen(0, "127.0.0.1", resolve));
   const securePort = (secureUpstream.address() as net.AddressInfo).port;
-  const mitm = await startProxy({ adminToken: "adm", host: "127.0.0.1", allowPrivateTargets: true, upstreamCa: upstreamCa.cert });
+  const mitm = await startProxy({ adminToken: "adm", host: "127.0.0.1", allowPrivateTargets: true, upstreamCa: upstreamCa.cert, ca: await freshCa() });
   try {
     const viaMitm = async (policyId: string) => {
       const { status, socket } = await connectTunnel(mitm, `127.0.0.1:${securePort}`, { "proxy-authorization": basic(policyId, "t") });
       assert.equal(status, 200);
       // The client trusts only the proxy's CA, so a successful handshake proves the proxy terminated TLS.
-      const secure = tls.connect({ socket, ca: [mitm.caCert], host: "127.0.0.1" });
+      const secure = tls.connect({ socket, ca: [mitm.caCert as string], host: "127.0.0.1" });
       await new Promise<void>((resolve, reject) => {
         secure.once("secureConnect", resolve);
         secure.once("error", reject);

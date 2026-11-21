@@ -67,7 +67,7 @@ print(box.exec(["python", "-c", "print(2+2)"]).stdout)
 box.destroy()
 ```
 
-Neither client has dependencies. See [docs/api.md](docs/api.md) for errors, streaming and every method.
+The Python client has no dependencies. The TypeScript client's code has none either, but it ships inside the `agentboxes` package, so installing it also installs the server's dependencies. See [docs/api.md](docs/api.md) for errors, streaming and every method.
 
 ## From an agent framework
 
@@ -117,7 +117,7 @@ Other settings, with defaults:
 - `PORT` (7788), `HOST`, `AGENTBOX_API_KEY`
 - `AGENTBOX_IMAGE` (`python:3.12-slim`), `MAX_SANDBOXES` (20), `POOL_SIZES` (`default:3`)
 - `MAX_OUTPUT_BYTES` (1 MiB per stream per command; anything past that is dropped and `truncated` is set), `MAX_FILE_BYTES` (8 MiB), `MAX_ARCHIVE_BYTES` (256 MiB)
-- `REAPER_INTERVAL_MS` (10000)
+- `REAPER_INTERVAL_MS` (10000), `MAX_LIFETIME_SECONDS` (86400, the longest a sandbox can live from creation; 0 disables)
 
 ## Network and secrets
 
@@ -131,7 +131,7 @@ curl -s -X POST localhost:7788/sandboxes -d '{"secrets":["api.openai.com"]}'
 
 With `allowHosts`, the sandbox gets its own network where the only thing it can reach is an egress proxy. The proxy allows those hosts on ports 80 and 443 (write `host:port` for another port) and refuses everything else. Refusals are logged at `GET /sandboxes/:id/egress-log`. An allowed hostname that resolves to localhost, the cloud metadata address or a private IP is refused too.
 
-You declare secrets on the server with `AGENTBOX_SECRETS`, binding each host to one environment variable. A create request names which of those hosts it wants with `secrets`, and the server hands the value only to the proxy, which adds the header to outgoing requests. The sandbox never sees the key, and a request cannot name a variable or a host you did not configure. There's a test that searches the sandbox's environment and files for the value and checks it isn't there.
+You declare secrets on the server with `AGENTBOX_SECRETS`, binding each host to one environment variable. A create request names which of those hosts it wants with `secrets`, and the server hands the value only to the proxy, which adds the header to outgoing requests. The key never enters the sandbox's environment or files; the proxy adds it on the way out, so a service that echoes request headers back would still show it to the sandbox. A request cannot name a variable or a host you did not configure. There's a test that searches the sandbox's environment and files for the value and checks it isn't there.
 
 More detail, including custom headers like `x-api-key` and which tools respect the proxy, is in [docs/network.md](docs/network.md).
 
@@ -162,9 +162,10 @@ Run `npm run bench` to reproduce the table. The method, plus KVM and Firecracker
 
 ## Limitations
 
-- Single host. One server per Docker host. Sandbox records are in SQLite, and a restarted server picks up the sandboxes that are still running. Restarting Docker, though, loses the egress proxy's state.
+- Single host. Sandbox records are in SQLite, and a restarted server picks up the sandboxes that are still running. Two servers can share a Docker host: each labels its containers with its own id and only touches its own. Restarting Docker, though, loses the egress proxy's state.
 - gVisor isn't a VM. It handles most syscalls itself, but some still reach the host kernel. If you need a separate kernel per sandbox, there's a Firecracker runtime, though it doesn't support every feature yet.
 - API keys separate users' sandboxes and limits, but everyone shares the same proxy, pool and Docker host, so this isn't strong multi-tenancy.
+- The egress proxy runs under runc, not gVisor, because gVisor does not attach networks added after a container starts. It holds the injected secret values in memory for every sandbox that has secrets, so a compromise of the proxy container would expose them. It drops all capabilities, runs as non-root with a read-only root, and is reachable only over sandbox networks with each sandbox's own token. Its certificate authority belongs to the server, which holds the private key on disk and sends it to the proxy over the proxy's control API. That API is plain HTTP on the default Docker bridge, guarded by an admin token, so the CA key is readable by anyone who can sniff that bridge. If the proxy crashes, new allowlisted or secret sandboxes are refused with 503 until you restart the server, which starts a fresh proxy and restores egress for the existing sandboxes within about 40 seconds, once each sandbox's network stack drops the old proxy's MAC; a restart with no crash reuses the proxy and keeps egress uninterrupted.
 - `/workspace` lives in RAM. A big `node_modules` or repo uses memory, up to `diskMb`. Going past it gives "no space left", not an OOM kill.
 - Nothing inside a sandbox is reachable from outside, and nothing is kept after the TTL, so you can't use it to host previews.
 
