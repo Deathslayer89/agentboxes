@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.3.0 (unreleased)
+## 0.3.1 (unreleased)
+
+- The network allowlist and secrets work again on Docker 28. 0.3.0 pinned the proxy's address on a sandbox network whose subnet Docker had chosen, which Docker 29 allows but Docker 28 rejects, so every allowlisted or secret sandbox failed on Docker 28; each sandbox network is now created with its own /24 subnet from a pool (10.201.0.0/16 by default; set `AGENTBOX_NETWORK_POOL` to change it), so the pinned address is legal on Docker 28 and 29.
+
+## 0.3.0
 
 - BREAKING: a secret in `AGENTBOX_SECRETS` is now available to an API key only when that key's name is in the secret's `keys` list. When the server runs with API keys, a secret with no `keys` list is usable by no key (and the server logs a startup warning); a create request for a secret the key is not allowed returns 403. When the server runs with no API keys, every secret is available as before.
 
