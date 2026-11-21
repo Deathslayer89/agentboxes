@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.1 (unreleased)
+## 0.3.1
 
 - The network allowlist and secrets work again on Docker 28. 0.3.0 pinned the proxy's address on a sandbox network whose subnet Docker had chosen, which Docker 29 allows but Docker 28 rejects, so every allowlisted or secret sandbox failed on Docker 28; each sandbox network is now created with its own /24 subnet from a pool (10.201.0.0/16 by default; set `AGENTBOX_NETWORK_POOL` to change it), so the pinned address is legal on Docker 28 and 29.
 - A sandbox killed past its memory cap is detected reliably on slower runtimes. 0.3.0 decided from a single container inspect, which on the systrap platform could still show the container running a moment after the kill and leave the record `ready`; the check now watches the container briefly until it stops or is OOM-killed. A command that exits 137 or 128 without a timeout now waits out that short watch before the sandbox is confirmed alive.
