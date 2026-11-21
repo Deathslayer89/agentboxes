@@ -1,9 +1,29 @@
 // Model Context Protocol server over stdio: gives Claude Code, Cursor and other MCP clients a sandbox to run code in.
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { rootLogger } from "../src/log.js";
 import { Agentbox, AgentboxError, ExecTimeout, type CreateOptions, type ExecResult, type Sandbox } from "../sdk/src/index.js";
+import { Session } from "./session.js";
+
+// How far above this file to look for package.json: enough for both the source tree and the compiled dist layout.
+const PACKAGE_JSON_SEARCH_DEPTH = 5;
+
+// The version in the nearest package.json above this file, so the MCP server never reports a stale one.
+function packageVersion(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < PACKAGE_JSON_SEARCH_DEPTH; i++, dir = dirname(dir)) {
+    try {
+      return JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).version as string;
+    } catch {
+      // keep walking up
+    }
+  }
+  return "0.0.0";
+}
 
 // stdout carries the protocol, so the log goes to stderr, which the MCP client keeps for its own log.
 const log = rootLogger(2).child({ component: "mcp" });
@@ -24,22 +44,8 @@ const LANGUAGES = {
   javascript: { file: "main.js", cmd: ["node", "main.js"] },
 };
 
-// One sandbox per MCP session, created on first use and replaced once it has expired or been destroyed.
-let current: Sandbox | undefined;
-
-async function sandbox(): Promise<Sandbox> {
-  if (current !== undefined) {
-    const info = await current.refresh().catch(() => undefined);
-    if (info !== undefined && (info.status === "ready" || info.status === "busy")) {
-      // Keep a sandbox that is still in use alive instead of losing its files at the TTL.
-      if (new Date(info.expiresAt).getTime() - Date.now() < 5 * 60_000) await current.extend().catch(() => {});
-      return current;
-    }
-  }
-  current = await client.create(createOptions);
-  log.info({ sandbox: current.id, source: current.info.startup.source }, "sandbox opened for this session");
-  return current;
-}
+const session = new Session<Sandbox>(client, createOptions, log);
+const sandbox = () => session.sandbox();
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean };
 
@@ -78,7 +84,7 @@ async function guarded(work: () => Promise<ToolResult>): Promise<ToolResult> {
   }
 }
 
-const server = new McpServer({ name: "agentbox", version: "0.2.0" });
+const server = new McpServer({ name: "agentbox", version: packageVersion() });
 
 server.registerTool(
   "run_code",
@@ -148,31 +154,15 @@ server.registerTool(
   { title: "Reset the sandbox", description: "Destroys the current sandbox. The next tool call gets a fresh one with an empty /workspace.", inputSchema: {} },
   () =>
     guarded(async () => {
-      const old = current;
-      current = undefined;
-      if (old !== undefined) await old.destroy().catch(() => {});
+      const old = await session.reset();
       return text(old === undefined ? "no sandbox was open" : `destroyed sandbox ${old.id}`);
     }),
 );
 
-/**
- * When the client goes away, so does the session's sandbox. A client ends our stdin first and
- * only signals later, so stdin ending, the transport closing and a signal all share one destroy.
- */
-let closing: Promise<void> | undefined;
-function closeSandbox(): Promise<void> {
-  closing ??= (async () => {
-    const old = current;
-    current = undefined;
-    if (old === undefined) return;
-    log.info({ sandbox: old.id }, "client gone, destroying the session sandbox");
-    await old.destroy().catch((err: unknown) => log.error({ sandbox: old.id, err }, "destroy failed"));
-  })();
-  return closing;
-}
-const leave = () => void closeSandbox().finally(() => process.exit(0));
+// When the client goes away, so does the session's sandbox. A client ends our stdin first and only signals later, so stdin ending, the transport closing and a signal all share one close.
+const leave = () => void session.close().finally(() => process.exit(0));
 process.stdin.once("end", leave);
-server.server.onclose = () => void closeSandbox();
+server.server.onclose = () => void session.close();
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, leave);
 
 await server.connect(new StdioServerTransport());

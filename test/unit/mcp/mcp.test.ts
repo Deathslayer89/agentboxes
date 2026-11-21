@@ -62,6 +62,23 @@ test("the five tools are listed", async () => {
   assert.deepEqual(tools.map((t) => t.name).sort(), ["read_file", "reset_sandbox", "run_code", "run_command", "write_file"]);
 });
 
+test("parallel tool calls on a fresh session create exactly one sandbox", async () => {
+  const calls = Array.from({ length: 4 }, () => client.callTool({ name: "run_command", arguments: { cmd: ["echo", "hi"] } }));
+  await Promise.all(calls);
+  assert.equal(service.list(true).length, 1, "parallel first calls must share one create, not make a sandbox each");
+});
+
+test("parallel calls after the session sandbox is gone create exactly one replacement, not several", async () => {
+  await client.callTool({ name: "run_command", arguments: { cmd: ["true"] } });
+  const stale = service.list().find((s) => s.status === "ready" || s.status === "busy")?.id;
+  assert.ok(stale, "a session sandbox exists to go stale");
+  await service.destroy(stale);
+  const calls = Array.from({ length: 4 }, () => client.callTool({ name: "run_command", arguments: { cmd: ["echo", "hi"] } }));
+  await Promise.all(calls);
+  const live = service.list().filter((s) => s.id !== stale);
+  assert.equal(live.length, 1, "a stale current must not be cleared over a parallel create, so exactly one replacement is made");
+});
+
 test("run_code writes the file and runs it in one sandbox that is reused across calls", async () => {
   const first = await client.callTool({ name: "run_code", arguments: { language: "python", code: "print(2+2)" } });
   assert.match(textOf(first), /exit code: 0 \(0\.0 s\)\nstdout:\npython main.py/);
