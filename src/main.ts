@@ -2,9 +2,9 @@ import { serve } from "@hono/node-server";
 import Docker from "dockerode";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { SystemClock } from "./clock.js";
-import { loadConfig, pickDbPath } from "./config.js";
+import { loadConfig, pickDbPath, pidPathFor } from "./config.js";
 import { RuntimeUnavailableError } from "./errors.js";
 import { createApp } from "./http/app.js";
 import { RandomIdGenerator } from "./id.js";
@@ -43,7 +43,7 @@ function livePid(file: string): number | undefined {
  * orphans and fill a pool of its own before finding the port taken. The pid file names the
  * running server; a file whose process is gone is stale and ignored.
  */
-const pidFile = join(dirname(config.dbPath), "agentbox.pid");
+const pidFile = pidPathFor(config.dbPath);
 const running = livePid(pidFile);
 if (running !== undefined) {
   log.fatal({ pid: running, pidFile }, `an agentbox server is already running on ${config.dbPath} (pid ${running}): stop it with npm stop, or delete ${pidFile} if that pid is not agentbox`);

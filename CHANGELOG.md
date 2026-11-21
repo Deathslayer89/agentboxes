@@ -30,6 +30,7 @@
 - BREAKING for source installs: running the server from a clone now needs openssl on the host (the Docker image already installs it).
 - A sandbox killed by its memory limit is marked destroyed when the exec that killed it returns, rather than staying `ready` until a reaper pass; a healthy sandbox whose command merely exits 137 or 128 on its own is left running and no longer waits on a death check.
 - The MCP server keeps one sandbox per session and shares a single create across parallel tool calls, so a burst of tools does not leave extra sandboxes running.
+- `agentbox stop` (and `npm stop`) stops the running server, found from the pid file next to `AGENTBOX_DB`.
 - The npm package ships only the listed documentation files.
 - Two servers can share a Docker host: each labels its containers, networks and proxy with its own id and only reaps its own.
 - The default database path moved to `~/.local/share/agentbox/agentbox.db` (under `XDG_DATA_HOME` when set). A server that already has `./data/agentbox.db` keeps using it and logs a notice, so upgrades do not lose data. Set `AGENTBOX_DB` to choose the path.

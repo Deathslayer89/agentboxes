@@ -1,12 +1,22 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ApiKey } from "./models/apiKey.js";
 import type { SandboxLimits, SecretSpec } from "./models/sandbox.js";
 import { DEFAULT_TEMPLATE, isValidTemplateName } from "./models/template.js";
 
 // The database path a project used before the default moved under the user's data directory.
 export const LEGACY_DB_PATH = "data/agentbox.db";
+
+// The path of the pid file, next to the database, so it resolves from the same AGENTBOX_DB the server used.
+export function pidPathFor(dbPath: string): string {
+  return join(dirname(dbPath), "agentbox.pid");
+}
+
+// Whether a process command line (from /proc/<pid>/cmdline, NULs replaced by spaces) is an agentbox server, matched by one of its entry points rather than a loose substring so a reused pid for another node process is not mistaken for one.
+export function looksLikeAgentbox(cmdline: string): boolean {
+  return /(?:^|[/\\\s])(?:src[/\\]main\.ts|dist[/\\]src[/\\]main\.js|bin[/\\]agentbox\.js\s+serve)(?:\s|$)|(?:^|\/)agentbox\s+serve/.test(cmdline);
+}
 
 /**
  * Where the SQLite file lives: AGENTBOX_DB when set, else the legacy ./data/agentbox.db when it already exists
@@ -138,6 +148,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     for (const name of secret.keys ?? []) {
       if (!configuredKeyNames.has(name)) throw new Error(`AGENTBOX_SECRETS for ${host} names key "${name}", which is not a configured API key`);
     }
+  }
+  // A lifetime cap below the default TTL would make every plain create() expire before its own deadline.
+  if (config.maxLifetimeSeconds !== 0 && config.maxLifetimeSeconds < config.defaults.ttlSeconds) {
+    throw new Error(`MAX_LIFETIME_SECONDS (${config.maxLifetimeSeconds}) must be 0 or at least DEFAULT_TTL_SECONDS (${config.defaults.ttlSeconds})`);
   }
   return config;
 }

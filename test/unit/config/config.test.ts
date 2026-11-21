@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { LEGACY_DB_PATH, loadConfig, parsePoolSizes, pickDbPath } from "../../../src/config.js";
+import { LEGACY_DB_PATH, loadConfig, looksLikeAgentbox, parsePoolSizes, pickDbPath, pidPathFor } from "../../../src/config.js";
 
 test("POOL_SIZES parses name:count pairs and defaults to one default pool of 3", () => {
   assert.deepEqual(parsePoolSizes(undefined), { default: 3 });
@@ -87,9 +87,32 @@ test("the database path prefers AGENTBOX_DB, keeps an existing ./data file, and 
   assert.equal(loadConfig({ AGENTBOX_DB: LEGACY_DB_PATH }).dbPathIsLegacy, false);
 });
 
+test("the pid file sits next to the database, so stop resolves the same path the server writes", () => {
+  assert.equal(pidPathFor("/var/lib/agentbox/agentbox.db"), "/var/lib/agentbox/agentbox.pid");
+  assert.equal(pidPathFor(pickDbPath({ AGENTBOX_DB: "/srv/data/agentbox.db" }, false).path), "/srv/data/agentbox.pid");
+  assert.equal(pidPathFor(loadConfig({ AGENTBOX_DB: "/srv/data/agentbox.db" }).dbPath), "/srv/data/agentbox.pid");
+});
+
+test("stop's process check accepts an agentbox server entry point and rejects anything else", () => {
+  assert.equal(looksLikeAgentbox("node --import tsx /srv/agentbox/src/main.ts"), true);
+  assert.equal(looksLikeAgentbox("node --import tsx src/main.ts"), true);
+  assert.equal(looksLikeAgentbox("node /usr/lib/node_modules/agentboxes/dist/src/main.js"), true);
+  assert.equal(looksLikeAgentbox("node /usr/lib/node_modules/agentboxes/bin/agentbox.js serve"), true);
+  assert.equal(looksLikeAgentbox("node /usr/local/bin/agentbox serve"), true);
+  assert.equal(looksLikeAgentbox("node /home/me/project/node_modules/.bin/agentbox serve"), true);
+  assert.equal(looksLikeAgentbox("node /opt/agentbox-dashboard/server.js"), false);
+  assert.equal(looksLikeAgentbox("node /usr/lib/node_modules/agentboxes/bin/agentbox.js stop"), false);
+  assert.equal(looksLikeAgentbox("node /home/me/app/dist/main.js"), false);
+  assert.equal(looksLikeAgentbox("node /opt/my-agentbox/run.js"), false);
+  assert.equal(looksLikeAgentbox("/usr/bin/postgres -D /var/lib/postgres"), false);
+  assert.equal(looksLikeAgentbox("sshd: dinesh@pts/0"), false);
+});
+
 test("MAX_LIFETIME_SECONDS defaults to one day, accepts zero to disable the cap, and refuses a negative value", () => {
   assert.equal(loadConfig({}).maxLifetimeSeconds, 86_400);
   assert.equal(loadConfig({ MAX_LIFETIME_SECONDS: "0" }).maxLifetimeSeconds, 0);
   assert.equal(loadConfig({ MAX_LIFETIME_SECONDS: "3600" }).maxLifetimeSeconds, 3600);
   assert.throws(() => loadConfig({ MAX_LIFETIME_SECONDS: "-1" }), /non-negative integer/);
+  assert.throws(() => loadConfig({ MAX_LIFETIME_SECONDS: "60", DEFAULT_TTL_SECONDS: "600" }), /must be 0 or at least DEFAULT_TTL_SECONDS/);
+  assert.equal(loadConfig({ MAX_LIFETIME_SECONDS: "0", DEFAULT_TTL_SECONDS: "600" }).maxLifetimeSeconds, 0);
 });

@@ -51,7 +51,7 @@
   ],
   "scripts": {
     "start": "node --import tsx src/main.ts",
-    "stop": "kill $(cat data/agentbox.pid)",
+    "stop": "node --import tsx src/stop.ts",
     "dev": "tsx watch src/main.ts",
     "typecheck": "tsc",
     "agentbox": "tsx src/cli.ts",
