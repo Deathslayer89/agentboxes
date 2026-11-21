@@ -49,6 +49,7 @@ export class EgressProxyManager {
   constructor(
     private readonly docker: Docker,
     private readonly settings: SettingsRepository,
+    private readonly serverId: string,
     private readonly log: Logger = logFor("proxy"),
   ) {}
 
@@ -88,7 +89,7 @@ export class EgressProxyManager {
   private async reuseRunning(source: string): Promise<boolean> {
     const token = this.settings.get(ADMIN_TOKEN_SETTING);
     if (token === undefined) return false;
-    const [running] = await this.docker.listContainers({ filters: { label: [`${LABEL_PROXY}=1`], status: ["running"] } });
+    const [running] = await this.docker.listContainers({ filters: { label: [`${LABEL_PROXY}=${this.serverId}`], status: ["running"] } });
     if (running === undefined || running.Labels[LABEL_SOURCE] !== source) return false;
     const info = (await this.docker.getContainer(running.Id).inspect()) as { NetworkSettings: { Networks: Record<string, { IPAddress: string }> } };
     const ip = info.NetworkSettings.Networks.bridge?.IPAddress;
@@ -192,7 +193,8 @@ export class EgressProxyManager {
 
   // A proxy container from a previous run has a stale token; networks without containers are leftovers too.
   private async removeLeftovers(): Promise<void> {
-    for (const c of await this.docker.listContainers({ all: true, filters: { label: [`${LABEL_PROXY}=1`] } })) {
+    // Only this server's own old proxy; another server's proxy is left alone.
+    for (const c of await this.docker.listContainers({ all: true, filters: { label: [`${LABEL_PROXY}=${this.serverId}`] } })) {
       await this.docker.getContainer(c.Id).remove({ force: true });
     }
     for (const n of await this.docker.listNetworks({ filters: { label: [LABEL_NETWORK] } })) {
@@ -204,9 +206,9 @@ export class EgressProxyManager {
   private async startContainer(): Promise<void> {
     const container = await this.docker.createContainer({
       Image: IMAGE,
-      name: CONTAINER,
+      name: `${CONTAINER}-${this.serverId}`,
       Env: [`ADMIN_TOKEN=${this.adminToken}`, `PROXY_PORT=${PROXY_PORT}`, `CONTROL_PORT=${CONTROL_PORT}`],
-      Labels: { [LABEL_PROXY]: "1" },
+      Labels: { [LABEL_PROXY]: this.serverId },
       HostConfig: {
         NetworkMode: "bridge",
         CapDrop: ["ALL"],

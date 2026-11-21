@@ -1,5 +1,6 @@
 import { serve } from "@hono/node-server";
 import Docker from "dockerode";
+import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { SystemClock } from "./clock.js";
@@ -50,10 +51,16 @@ if (running !== undefined) {
 }
 const docker = new Docker();
 const store = new SqliteStore(config.dbPath);
+// One id per data directory, so this server only ever reaps the containers and proxy it owns, even if another server shares the host.
+let serverId = store.settings.get("server.id");
+if (serverId === undefined) {
+  serverId = randomBytes(8).toString("hex");
+  store.settings.set("server.id", serverId);
+}
 const runtime =
   config.runtime === "firecracker"
     ? new FirecrackerRuntime(dirname(config.dbPath), config.defaults, config.maxOutputBytes)
-    : new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker, store.settings));
+    : new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker, store.settings, serverId), serverId);
 const templates = new DockerTemplateRepository(docker);
 
 // Refuse to start without gVisor instead of silently running on runc.

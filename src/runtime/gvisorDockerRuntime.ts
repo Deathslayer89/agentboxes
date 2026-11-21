@@ -19,6 +19,8 @@ const LABEL = "agentbox";
 const LABEL_ID = "agentbox.id";
 // "1" on containers that have their own network, so destroy() knows to remove it.
 const LABEL_NETWORKED = "agentbox.networked";
+// The id of the server that created the container.
+const LABEL_SERVER = "agentbox.server";
 /**
  * If the in-sandbox `timeout` has not ended the exec this long after its deadline,
  * kill the whole container.
@@ -71,6 +73,7 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     private readonly maxFileBytes: number,
     private readonly maxArchiveBytes: number,
     private readonly egress: EgressProxyManager,
+    private readonly serverId: string,
     private readonly log: Logger = logFor("runtime"),
   ) {
     this.runtimeName = requestedRuntime;
@@ -141,7 +144,7 @@ export class GvisorDockerRuntime implements SandboxRuntime {
         "PYTHONUNBUFFERED=1", // python output arrives line by line instead of at exit
         ...(attachment?.env ?? []),
       ],
-      Labels: { [LABEL]: "1", [LABEL_ID]: sandboxId, [LABEL_NETWORKED]: attachment === undefined ? "0" : "1" },
+      Labels: { [LABEL]: "1", [LABEL_ID]: sandboxId, [LABEL_NETWORKED]: attachment === undefined ? "0" : "1", [LABEL_SERVER]: this.serverId },
       HostConfig: {
         Runtime: this.runtimeName, // S1: gVisor
         NetworkMode: attachment?.network ?? "none", // S2: no network, or only the sandbox's own network to the proxy
@@ -296,7 +299,8 @@ export class GvisorDockerRuntime implements SandboxRuntime {
   }
 
   async listManaged(): Promise<Array<{ sandboxId: string; handle: string; running: boolean; exited: boolean }>> {
-    const containers = await this.docker.listContainers({ all: true, filters: { label: [`${LABEL}=1`] } });
+    // Only containers this server created.
+    const containers = await this.docker.listContainers({ all: true, filters: { label: [`${LABEL_SERVER}=${this.serverId}`] } });
     // A container that is neither running nor exited is still being created; only "exited" and "dead" are final.
     return containers.map((c) => ({ sandboxId: c.Labels[LABEL_ID] ?? "", handle: c.Id, running: c.State === "running", exited: c.State === "exited" || c.State === "dead" }));
   }

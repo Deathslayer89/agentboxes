@@ -25,7 +25,8 @@ import { WarmPool, WarmPools } from "../../src/services/warmPool.js";
 
 const config = loadConfig({ ...process.env, DEFAULT_TTL_SECONDS: "120" });
 const docker = new Docker();
-const runtime = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker, new InMemorySettings()));
+const SERVER_ID = "srvtest_main";
+const runtime = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker, new InMemorySettings(), SERVER_ID), SERVER_ID);
 const templates = new DockerTemplateRepository(docker);
 const service = new SandboxService(new InMemorySandboxRepository(), templates, runtime, config, new SystemClock(), new RandomIdGenerator("sbxtest_"), new WarmPools());
 
@@ -363,12 +364,34 @@ test("the TTL holds while the server is down: PID 1 ends the sandbox at its dead
   assert.equal((await runtime.listManaged()).some((c) => c.handle === handle), false);
 });
 
+test("a second server on the same host leaves this server's sandbox alone", async () => {
+  const box = await service.create();
+  try {
+    const other = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, new EgressProxyManager(docker, new InMemorySettings(), "srvtest_other"), "srvtest_other");
+    await other.init();
+    const config2 = loadConfig({ ...process.env, DEFAULT_TTL_SECONDS: "120", POOL_SIZES: "default:0" });
+    const service2 = new SandboxService(new InMemorySandboxRepository(), templates, other, config2, new SystemClock(), new RandomIdGenerator("srvtest_other_"), new WarmPools());
+    // The second server knows nothing about this sandbox; without the server label it would remove the container as an orphan.
+    const result = await service2.reap();
+    assert.equal(result.orphans.length, 0, JSON.stringify(result));
+    assert.equal((await runtime.listManaged()).some((c) => c.handle === box.handle && c.running), true);
+    assert.equal((await service.exec(box.id, { cmd: ["echo", "alive"] })).stdout.trim(), "alive");
+  } finally {
+    await service.destroy(box.id).catch(() => {});
+  }
+});
+
 test("restart: a second server run adopts running sandboxes from the SQLite file and reuses the proxy", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agentbox-restart-"));
   const path = join(dir, "agentbox.db");
   const make = async (store: SqliteStore) => {
-    const egress = new EgressProxyManager(docker, store.settings);
-    const rt = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, egress);
+    let id = store.settings.get("server.id");
+    if (id === undefined) {
+      id = "srvtest_restart";
+      store.settings.set("server.id", id);
+    }
+    const egress = new EgressProxyManager(docker, store.settings, id);
+    const rt = new GvisorDockerRuntime(docker, config.runtime, config.image, config.maxOutputBytes, config.maxFileBytes, config.maxArchiveBytes, egress, id);
     await rt.init();
     return { rt, egress, svc: new SandboxService(store.sandboxes, templates, rt, config, new SystemClock(), new RandomIdGenerator("sbxrestart_"), new WarmPools()) };
   };
