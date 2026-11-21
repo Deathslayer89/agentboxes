@@ -358,6 +358,15 @@ test("adopt destroys a networked sandbox whose egress policy cannot be re-regist
   assert.equal(service.get(networked.id).status, "destroyed");
 });
 
+test("adopt does not bring back a sandbox whose container exited while the server was down", async () => {
+  const { service, runtime } = makeService();
+  const box = await service.create();
+  runtime.dead.add(box.handle ?? ""); // the container exited while the server was down, though it is still listed
+  const result = await service.adopt();
+  assert.deepEqual(result, { adopted: [], lost: [box.id] });
+  assert.equal(service.get(box.id).status, "expired");
+});
+
 test("adopt destroys a networked sandbox whose owner key has lost access to a secret it used, so revocation applies on restart", async () => {
   const { service, runtime, config } = makeService({ AGENTBOX_API_KEYS: "alice:key-alice", OPENAI_API_KEY: "sk", AGENTBOX_SECRETS: '{"api.openai.com":{"env":"OPENAI_API_KEY","keys":["alice"]}}' });
   const box = await service.create({ secrets: ["api.openai.com"] }, "alice");

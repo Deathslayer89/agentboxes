@@ -208,7 +208,6 @@ export class SandboxService {
     return report;
   }
 
-
   stats(): { sandboxes: { live: number; max: number }; pools: Record<string, PoolStats> } {
     return { sandboxes: { live: this.liveCount(), max: this.config.maxSandboxes }, pools: this.pools.stats() };
   }
@@ -400,7 +399,8 @@ export class SandboxService {
    * token cannot be read back.
    */
   async adopt(): Promise<{ adopted: string[]; lost: string[] }> {
-    const running = new Set((await this.runtime.listManaged()).map((c) => c.handle));
+    // Only containers that are actually running, so a sandbox whose container exited while the server was down is not adopted as "ready".
+    const running = new Set((await this.runtime.listManaged()).filter((c) => c.running).map((c) => c.handle));
     const adopted: string[] = [];
     const lost: string[] = [];
     for (const sandbox of this.sandboxes.findAll()) {
