@@ -1,6 +1,6 @@
 {
   "name": "agentboxes-sdk-dev",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "description": "TypeScript client for an agentbox server: sandboxes for AI agents on your own Linux box",
   "type": "module",

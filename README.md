@@ -6,7 +6,7 @@ Published on npm and PyPI as `agentboxes`.
 
 What you get:
 
-- A sandbox in about 1 ms from the warm pool (130 ms cold), and about 30 ms per command.
+- A sandbox from the warm pool in a few milliseconds, and commands in tens of milliseconds; cold starts and the full numbers, with the machine and date they were measured on, are in the [benchmarks](docs/benchmarks.md).
 - No network by default. You list the hosts a sandbox may reach, and API keys are added by a proxy on the way out, so they never sit inside the sandbox.
 - Every sandbox runs under gVisor with a read-only root, no capabilities, no host mounts, memory and CPU limits, and a TTL.
 - One npm package with the server, an MCP server for Claude Code and Cursor, and a TypeScript client. There's a Python client too.
@@ -148,15 +148,15 @@ There's a Node 22 template in `templates/node/Dockerfile`. Pools per template an
 
 ## Performance
 
-Measured through the HTTP API on an i7-12700H laptop (Docker 29, runsc release-20261026.0):
+Measured through the HTTP API on an i7-12700H laptop (Docker 29, runsc release-20261102.0, runtime `runsc-kvm`) on 2026-11-20; see [docs/benchmarks.md](docs/benchmarks.md) for 0.3.0 against 0.2.4 and how these move with the host and the runsc version:
 
-| | p50 | p95 |
-|---|---|---|
-| create from the warm pool | 1.1 ms | 2.2 ms |
-| create cold | 130 ms | 154 ms |
-| exec `print(2+2)` | 31 ms | 36 ms |
+| | p50 |
+|---|---|
+| create from the warm pool | 4.1 to 4.9 ms |
+| create cold | 204 to 212 ms |
+| exec `print(2+2)` | 70 to 83 ms |
 
-An idle sandbox uses about 16 MB of host memory. Compared to plain Docker (runc), gVisor makes Python startup about 1.3x slower, `pip install` 1.1x and `npm install` 1.35x (1.12x with KVM).
+An idle sandbox uses about 16 MB of host memory. Compared to plain Docker (runc) on the systrap platform, gVisor makes Python startup about 1.3x slower, `pip install` 1.1x and `npm install` 1.35x (1.12x on the KVM platform).
 
 Run `npm run bench` to reproduce the table. The method, plus KVM and Firecracker numbers, is in [docs/benchmarks.md](docs/benchmarks.md) and [docs/runtimes.md](docs/runtimes.md).
 

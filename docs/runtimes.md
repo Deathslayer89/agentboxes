@@ -34,4 +34,4 @@ docker run --rm --runtime=runsc-kvm alpine uname -a
 npm start        # logs "runtime runsc-kvm"
 ```
 
-Measured on this machine, one process writing and reading 3000 small files: 228 ms on systrap, 133 ms on KVM, 66 ms on runc. `npm install express`: 1945 ms, 1238 ms, 1110 ms. Python startup is unchanged at about 14 ms, and a cold sandbox start is about 20 ms slower on KVM (150 ms against 130 ms) because each sandbox sets up a small VM. `AGENTBOX_RUNTIME` accepts `auto` (the default), `runsc`, or a `runsc-` variant; there is no way to run on plain runc.
+Measured on this machine, one process writing and reading 3000 small files: 228 ms on systrap, 133 ms on KVM, 66 ms on runc. `npm install express`: 1945 ms, 1238 ms, 1110 ms. Python startup is unchanged at about 14 ms, and a cold sandbox start is about 20 ms slower on KVM than systrap because each sandbox sets up a small VM. `AGENTBOX_RUNTIME` accepts `auto` (the default), `runsc`, or a `runsc-` variant; there is no way to run on plain runc.
