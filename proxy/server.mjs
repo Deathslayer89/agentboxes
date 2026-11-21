@@ -9,6 +9,8 @@ import { inSubnet, isPublicAddress, parseProxyAuth, refusalFor, splitHostPort } 
 
 // Denied attempts kept per sandbox; older entries are dropped.
 const MAX_DENIED = 1000;
+// Leaf certificates are valid thirty days; reissue after twenty-five so one is never served close to or past expiry.
+const LEAF_RENEW_MS = 25 * 24 * 60 * 60 * 1000;
 
 /**
  * The egress proxy. Sandboxes reach it as an HTTP proxy (absolute-URL requests and CONNECT)
@@ -28,15 +30,19 @@ export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = h
   // sandboxId -> { token, subnet, allowHosts, secrets, denied }
   const policies = new Map();
   const ca = await createCa();
-  // host -> Promise<{ key, cert }>, so two concurrent requests for one host share one certificate
+  // host -> { pending: Promise<{ key, cert }>, issuedAt }, so concurrent requests share one certificate and it can be renewed before expiry
   const leafs = new Map();
 
   function leafFor(target) {
-    let pending = leafs.get(target);
-    if (pending === undefined) {
-      pending = issueCert(ca, target);
-      leafs.set(target, pending);
-    }
+    const entry = leafs.get(target);
+    // Reuse a cached leaf until it is near its 30-day expiry, so a long-running proxy renews instead of serving an expired cert.
+    if (entry !== undefined && Date.now() - entry.issuedAt < LEAF_RENEW_MS) return entry.pending;
+    // A failed issue is removed from the cache so the next request retries instead of getting the same rejection forever.
+    const pending = issueCert(ca, target).catch((err) => {
+      if (leafs.get(target)?.pending === pending) leafs.delete(target);
+      throw err;
+    });
+    leafs.set(target, { pending, issuedAt: Date.now() });
     return pending;
   }
 
@@ -84,7 +90,15 @@ export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = h
     const options = { host: address, port, method: req.method, path, headers, servername: net.isIP(target) ? "" : target };
     if (upstreamCa !== undefined) options.ca = upstreamCa;
     const upstream = (protocol === "https:" ? https : http).request(options, (response) => {
-      res.writeHead(response.statusCode, response.headers);
+      try {
+        res.writeHead(response.statusCode, response.headers);
+      } catch {
+        // An out-of-range upstream status such as 099 would throw here and crash the proxy; answer 502 and drop the response instead.
+        response.destroy();
+        if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
+        res.end("agentbox egress proxy: upstream returned an invalid status\n");
+        return;
+      }
       response.pipe(res);
     });
     upstream.on("error", (err) => {
@@ -193,7 +207,12 @@ export async function startProxy({ adminToken, host = "0.0.0.0", controlHost = h
     }
     if (resource === "policies" && id !== undefined) {
       if (req.method === "PUT" && action === undefined) {
-        const body = JSON.parse(await readBody(req));
+        let body;
+        try {
+          body = JSON.parse(await readBody(req));
+        } catch {
+          return json(400, { error: "body must be valid JSON" });
+        }
         policies.set(id, {
           token: body.token,
           subnet: typeof body.subnet === "string" ? body.subnet : undefined,

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import http from "node:http";
 import https from "node:https";
-import type net from "node:net";
+import net from "node:net";
 import tls from "node:tls";
 import test, { after, before } from "node:test";
 import { createCa, issueCert } from "../../../proxy/certs.mjs";
@@ -86,6 +86,34 @@ test("the control API needs the admin token", async () => {
   assert.equal((await control(proxy, "GET", "/health", undefined, "wrong")).status, 401);
   assert.equal((await control(proxy, "GET", "/health")).status, 200);
   assert.match(await (await control(proxy, "GET", "/ca")).text(), /BEGIN CERTIFICATE/);
+});
+
+test("an upstream answering with an out-of-range status is turned into a 502, and the proxy keeps serving", async () => {
+  const raw = net.createServer((sock) => sock.end("HTTP/1.1 099 X\r\nContent-Length: 0\r\n\r\n"));
+  await new Promise<void>((resolve) => raw.listen(0, "127.0.0.1", () => resolve()));
+  const rawPort = (raw.address() as net.AddressInfo).port;
+  const p = await startProxy({ adminToken: "adm", host: "127.0.0.1", allowPrivateTargets: true });
+  try {
+    await control(p, "PUT", "/policies/s", { token: "t", allowHosts: [`127.0.0.1:${rawPort}`] });
+    const first = await viaProxy(p, `http://127.0.0.1:${rawPort}/`, { "proxy-authorization": basic("s", "t") });
+    assert.equal(first.status, 502, "an invalid upstream status becomes a 502");
+    const second = await viaProxy(p, `http://127.0.0.1:${rawPort}/`, { "proxy-authorization": basic("s", "t") });
+    assert.equal(second.status, 502, "the proxy still serves the next request instead of crashing");
+  } finally {
+    await p.close();
+    raw.close();
+  }
+});
+
+test("a malformed policy body is answered with 400 and does not take the proxy down", async () => {
+  const p = await startProxy({ adminToken: "adm", host: "127.0.0.1" });
+  try {
+    const res = await fetch(`http://127.0.0.1:${p.controlPort}/policies/s`, { method: "PUT", headers: { authorization: "Bearer adm" }, body: "{ not json" });
+    assert.equal(res.status, 400);
+    assert.equal((await control(p, "GET", "/health")).status, 200, "the proxy keeps serving after a bad request");
+  } finally {
+    await p.close();
+  }
 });
 
 test("plain HTTP: an allowed host is forwarded; the sandbox must authenticate to the proxy", async () => {

@@ -1,6 +1,14 @@
 import os from "node:os";
 import { startProxy } from "./server.mjs";
 
+// An unhandled rejection is logged and the proxy keeps serving, since every known async path is already handled.
+process.on("unhandledRejection", (err) => console.error("agentbox egress proxy: unhandledRejection:", err));
+// An uncaughtException leaves the process in an undefined state, so it exits and Docker's restart policy brings it back clean.
+process.on("uncaughtException", (err) => {
+  console.error("agentbox egress proxy: uncaughtException:", err);
+  process.exit(1);
+});
+
 const adminToken = process.env.ADMIN_TOKEN;
 if (!adminToken) {
   console.error("ADMIN_TOKEN is required");
