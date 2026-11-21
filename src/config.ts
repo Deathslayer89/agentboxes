@@ -4,7 +4,6 @@ import { join } from "node:path";
 import type { ApiKey } from "./models/apiKey.js";
 import type { SandboxLimits, SecretSpec } from "./models/sandbox.js";
 import { DEFAULT_TEMPLATE, isValidTemplateName } from "./models/template.js";
-import type { SecretHeader } from "./runtime/sandboxRuntime.js";
 
 // The database path a project used before the default moved under the user's data directory.
 export const LEGACY_DB_PATH = "data/agentbox.db";
@@ -22,6 +21,14 @@ export function pickDbPath(env: NodeJS.ProcessEnv, legacyExists: boolean): { pat
 
 // Headers the proxy owns; a configured secret may not be sent in one of these.
 const RESERVED_HEADERS = new Set(["host", "content-length", "transfer-encoding", "connection", "proxy-authorization"]);
+
+// A secret resolved from AGENTBOX_SECRETS: the header and value the proxy sends, the source variable name for messages, and the API key names allowed to use it.
+export interface ConfiguredSecret {
+  header: string;
+  value: string;
+  env: string;
+  keys?: string[];
+}
 
 export interface Config {
   port: number;
@@ -51,7 +58,7 @@ export interface Config {
   poolSizes: Record<string, number>;
   reaperIntervalMs: number;
   // Secret bindings the proxy may inject, by host, resolved at load from AGENTBOX_SECRETS and the named environment variables. A create request names hosts from this map; it cannot name an arbitrary variable.
-  secrets: Record<string, SecretHeader>;
+  secrets: Record<string, ConfiguredSecret>;
   // SQLite file for sandbox records and settings, so they survive a server restart.
   dbPath: string;
   // True when dbPath fell back to the legacy ./data/agentbox.db because it exists and AGENTBOX_DB is unset.
@@ -118,6 +125,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (config.defaultExecTimeoutMs > config.maxExecTimeoutMs) {
     throw new Error("DEFAULT_EXEC_TIMEOUT_MS is above MAX_EXEC_TIMEOUT_MS");
   }
+  // A secret bound to a key name that is not configured would silently be usable by no one; catch that at boot.
+  const configuredKeyNames = new Set(config.apiKeys.map((key) => key.name));
+  for (const [host, secret] of Object.entries(config.secrets)) {
+    for (const name of secret.keys ?? []) {
+      if (!configuredKeyNames.has(name)) throw new Error(`AGENTBOX_SECRETS for ${host} names key "${name}", which is not a configured API key`);
+    }
+  }
   return config;
 }
 
@@ -171,7 +185,7 @@ export function parsePoolSizes(raw: string | undefined): Record<string, number> 
  * A secret is `"ENV_NAME"` (sent as `Authorization: Bearer <value>`) or `{ env, header?, prefix? }`. The value
  * is read from the named environment variable at load, so only the operator decides which variable goes to which host.
  */
-function parseSecrets(env: NodeJS.ProcessEnv): Record<string, SecretHeader> {
+function parseSecrets(env: NodeJS.ProcessEnv): Record<string, ConfiguredSecret> {
   const raw = env.AGENTBOX_SECRETS;
   if (raw === undefined || raw === "") return {};
   let spec: unknown;
@@ -183,7 +197,7 @@ function parseSecrets(env: NodeJS.ProcessEnv): Record<string, SecretHeader> {
   if (typeof spec !== "object" || spec === null || Array.isArray(spec)) {
     throw new Error("AGENTBOX_SECRETS must be a JSON object of host to secret");
   }
-  const secrets: Record<string, SecretHeader> = {};
+  const secrets: Record<string, ConfiguredSecret> = {};
   for (const [host, entry] of Object.entries(spec as Record<string, unknown>)) {
     const def: SecretSpec = typeof entry === "string" ? { env: entry } : (entry as SecretSpec);
     if (typeof def.env !== "string" || def.env === "") throw new Error(`AGENTBOX_SECRETS: ${host} must name an environment variable`);
@@ -192,7 +206,12 @@ function parseSecrets(env: NodeJS.ProcessEnv): Record<string, SecretHeader> {
     const header = typeof def.header === "string" ? def.header : "Authorization";
     if (RESERVED_HEADERS.has(header.toLowerCase())) throw new Error(`AGENTBOX_SECRETS: ${host} may not use the ${header} header`);
     const prefix = typeof def.prefix === "string" ? def.prefix : header.toLowerCase() === "authorization" ? "Bearer " : "";
-    secrets[host.toLowerCase()] = { header, value: prefix + value };
+    let keys: string[] | undefined;
+    if (def.keys !== undefined) {
+      if (!Array.isArray(def.keys) || !def.keys.every((k) => typeof k === "string" && k !== "")) throw new Error(`AGENTBOX_SECRETS: ${host} keys must be an array of API key names`);
+      keys = def.keys;
+    }
+    secrets[host.toLowerCase()] = { header, value: prefix + value, env: def.env, ...(keys !== undefined ? { keys } : {}) };
   }
   return secrets;
 }

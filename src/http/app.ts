@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { ConflictError, DomainError, LimitExceededError, NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
+import { ConflictError, DomainError, ForbiddenError, LimitExceededError, NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
 import type { Logger } from "../log.js";
 import { LOCAL_OWNER, type ApiKey } from "../models/apiKey.js";
 import type { Sandbox } from "../models/sandbox.js";
@@ -25,6 +25,7 @@ function view(sandbox: Sandbox) {
 function statusFor(err: DomainError): ContentfulStatusCode {
   if (err instanceof ValidationError) return 400;
   if (err instanceof UnauthorizedError) return 401;
+  if (err instanceof ForbiddenError) return 403;
   if (err instanceof NotFoundError) return 404;
   if (err instanceof ConflictError) return 409;
   if (err instanceof LimitExceededError) return 429;

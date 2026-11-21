@@ -53,6 +53,13 @@ if (config.dbPathIsLegacy) {
   const moved = pickDbPath({ ...process.env, AGENTBOX_DB: undefined }, false).path;
   log.warn(`agentbox is using the database at ${resolve(config.dbPath)}; the default is moving to ${moved}. To keep this one, set AGENTBOX_DB=${resolve(config.dbPath)}; otherwise move the file to ${moved}.`);
 }
+if (config.apiKeys.length > 0) {
+  for (const [host, secret] of Object.entries(config.secrets)) {
+    if (secret.keys === undefined) {
+      log.warn(`the secret for ${host} has no "keys" list, so no API key can use it. Add the allowed key names, for example AGENTBOX_SECRETS='{"${host}":{"env":"${secret.env}","keys":["<key-name>"]}}'.`);
+    }
+  }
+}
 const docker = new Docker();
 const store = new SqliteStore(config.dbPath);
 // One id per data directory, so this server only ever reaps the containers and proxy it owns, even if another server shares the host.

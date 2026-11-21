@@ -1,7 +1,7 @@
 import os from "node:os";
 import type { Clock } from "../clock.js";
 import type { Config } from "../config.js";
-import { ConflictError, LimitExceededError, NotFoundError, ValidationError } from "../errors.js";
+import { ConflictError, ForbiddenError, LimitExceededError, NotFoundError, ValidationError } from "../errors.js";
 import type { IdGenerator } from "../id.js";
 import { logFor, type Logger } from "../log.js";
 import { isGone, type CreateSandboxRequest, type ExecRequest, type ExecResult, type Sandbox, type SandboxLimits, type SandboxNetwork } from "../models/sandbox.js";
@@ -61,7 +61,7 @@ export class SandboxService {
     }
     this.checkOwnerLimits(owner, limits);
     const template = request.template ?? DEFAULT_TEMPLATE;
-    const egress = this.egressFor(request);
+    const egress = this.egressFor(request, owner);
     const startedAt = performance.now();
     const now = this.clock.now();
     const sandbox: Sandbox = {
@@ -121,16 +121,21 @@ export class SandboxService {
   }
 
   /**
-   * Turns allowHosts and the requested secret hosts into what the proxy enforces. Each requested host must have
-   * a binding in the server's AGENTBOX_SECRETS; the resolved value goes only to the proxy, never onto the record.
+   * Turns allowHosts and the requested secret hosts into what the proxy enforces. Each requested host must have a
+   * binding in AGENTBOX_SECRETS, and when auth is on the requesting key must be in that secret's "keys" list. The
+   * resolved value goes only to the proxy, never onto the record.
    */
-  private egressFor(request: CreateSandboxRequest): { policy: EgressPolicy; network: SandboxNetwork } | undefined {
+  private egressFor(request: CreateSandboxRequest, keyName: string): { policy: EgressPolicy; network: SandboxNetwork } | undefined {
     if (request.allowHosts === undefined && request.secrets === undefined) return undefined;
+    const authOn = this.config.apiKeys.length > 0;
     const secrets: Record<string, SecretHeader> = {};
     for (const host of request.secrets ?? []) {
       const secret = this.config.secrets[host];
       if (secret === undefined) throw new ValidationError(`no secret is configured for ${host}; set it in AGENTBOX_SECRETS on the server`);
-      secrets[host] = secret;
+      if (authOn && !(secret.keys?.includes(keyName) ?? false)) {
+        throw new ForbiddenError(`the secret for ${host} is not available to this API key; add this key's name to the "keys" list for ${host} in AGENTBOX_SECRETS`);
+      }
+      secrets[host] = { header: secret.header, value: secret.value };
     }
     // A host with a secret is allowed on 80 and 443 without listing it twice.
     const allowHosts = [...new Set([...(request.allowHosts ?? []), ...Object.keys(secrets)])];

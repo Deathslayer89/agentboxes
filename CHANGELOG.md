@@ -2,6 +2,17 @@
 
 ## 0.3.0 (unreleased)
 
+- BREAKING: a secret in `AGENTBOX_SECRETS` is now available to an API key only when that key's name is in the secret's `keys` list. When the server runs with API keys, a secret with no `keys` list is usable by no key (and the server logs a startup warning); a create request for a secret the key is not allowed returns 403. When the server runs with no API keys, every secret is available as before.
+
+  Migration: add the allowed key names to each secret.
+
+  ```
+  # before
+  AGENTBOX_SECRETS='{"api.openai.com":"OPENAI_API_KEY"}'
+  # after
+  AGENTBOX_SECRETS='{"api.openai.com":{"env":"OPENAI_API_KEY","keys":["alice"]}}'
+  ```
+
 - The npm package ships only the listed documentation files.
 - Two servers can share a Docker host: each labels its containers, networks and proxy with its own id and only reaps its own.
 - The default database path moved to `~/.local/share/agentbox/agentbox.db` (under `XDG_DATA_HOME` when set). A server that already has `./data/agentbox.db` keeps using it and logs a notice, so upgrades do not lose data. Set `AGENTBOX_DB` to choose the path.

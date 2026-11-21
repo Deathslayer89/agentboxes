@@ -14,6 +14,9 @@ export class ValidationError extends DomainError {}
 export class ConflictError extends DomainError {}
 export class UnauthorizedError extends DomainError {}
 
+// The caller is authenticated but not allowed to use this resource, for example a secret not bound to their API key.
+export class ForbiddenError extends DomainError {}
+
 // The server's cap on live sandboxes has been reached.
 export class LimitExceededError extends DomainError {}
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { FakeClock } from "../../../src/clock.js";
 import { loadConfig } from "../../../src/config.js";
-import { ConflictError, LimitExceededError, NotFoundError, ValidationError } from "../../../src/errors.js";
+import { ConflictError, ForbiddenError, LimitExceededError, NotFoundError, ValidationError } from "../../../src/errors.js";
 import { CounterIdGenerator } from "../../../src/id.js";
 import { InMemorySandboxRepository } from "../../../src/repositories/sandboxRepository.js";
 import { InMemoryTemplateRepository } from "../../../src/repositories/templateRepository.js";
@@ -222,6 +222,29 @@ test("allowHosts and secrets become an egress policy; the value comes from the s
   assert.equal((await service.egressLog(box.id)).denied.length, 1);
   await service.destroy(box.id);
   await assert.rejects(service.egressLog(box.id), ConflictError);
+});
+
+test("a secret is injected only for an API key named in its keys list, and refused for any other key", async () => {
+  const { service, runtime } = makeService({
+    AGENTBOX_API_KEYS: "alice:key-alice,bob:key-bob",
+    OPENAI_API_KEY: "sk-openai",
+    AGENTBOX_SECRETS: '{"api.openai.com":{"env":"OPENAI_API_KEY","keys":["alice"]}}',
+  });
+  const box = await service.create({ secrets: ["api.openai.com"] }, "alice");
+  assert.deepEqual(runtime.containers.get(box.handle ?? "")?.egress?.secrets, {
+    "api.openai.com": { header: "Authorization", value: "Bearer sk-openai" },
+  });
+  const before = runtime.containers.size;
+  await assert.rejects(service.create({ secrets: ["api.openai.com"] }, "bob"), ForbiddenError);
+  assert.equal(runtime.containers.size, before, "a refused request must not create a sandbox");
+});
+
+test("a secret with no keys list works when auth is off and is refused when auth is on", async () => {
+  const off = makeService({ OPENAI_API_KEY: "sk", AGENTBOX_SECRETS: '{"api.openai.com":"OPENAI_API_KEY"}' });
+  const box = await off.service.create({ secrets: ["api.openai.com"] });
+  assert.equal(box.network?.secretHosts.includes("api.openai.com"), true);
+  const on = makeService({ AGENTBOX_API_KEYS: "alice:key-alice", OPENAI_API_KEY: "sk", AGENTBOX_SECRETS: '{"api.openai.com":"OPENAI_API_KEY"}' });
+  await assert.rejects(on.service.create({ secrets: ["api.openai.com"] }, "alice"), ForbiddenError);
 });
 
 test("exec passes a validated cwd and per-command env to the runtime", async () => {

@@ -55,6 +55,8 @@ export interface SecretSpec {
   env: string;
   header?: string;
   prefix?: string;
+  // Names of the API keys allowed to use this secret; when auth is on, a secret with no list is usable by no key.
+  keys?: string[];
 }
 
 export type CreateSandboxRequest = Partial<SandboxLimits> & {

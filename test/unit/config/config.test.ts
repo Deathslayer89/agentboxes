@@ -52,9 +52,22 @@ test("AGENTBOX_SECRETS binds each secret to one host and resolves its value from
     AGENTBOX_SECRETS: '{"API.openai.com":"OPENAI_API_KEY","api.anthropic.com":{"env":"ANTHROPIC_API_KEY","header":"x-api-key"}}',
   }).secrets;
   assert.deepEqual(secrets, {
-    "api.openai.com": { header: "Authorization", value: "Bearer sk-openai" },
-    "api.anthropic.com": { header: "x-api-key", value: "sk-anthropic" },
+    "api.openai.com": { header: "Authorization", value: "Bearer sk-openai", env: "OPENAI_API_KEY" },
+    "api.anthropic.com": { header: "x-api-key", value: "sk-anthropic", env: "ANTHROPIC_API_KEY" },
   });
+});
+
+test("AGENTBOX_SECRETS records the API key names allowed to use each secret", () => {
+  const secrets = loadConfig({ AGENTBOX_API_KEYS: "alice:ka,bob:kb", OPENAI_API_KEY: "sk", AGENTBOX_SECRETS: '{"api.openai.com":{"env":"OPENAI_API_KEY","keys":["alice","bob"]}}' }).secrets;
+  assert.deepEqual(secrets["api.openai.com"]?.keys, ["alice", "bob"]);
+  assert.throws(() => loadConfig({ OPENAI_API_KEY: "sk", AGENTBOX_SECRETS: '{"api.openai.com":{"env":"OPENAI_API_KEY","keys":"alice"}}' }), /keys must be an array/);
+});
+
+test("a secret bound to a key name that is not configured is a startup error", () => {
+  assert.throws(
+    () => loadConfig({ AGENTBOX_API_KEYS: "alice:ka", OPENAI_API_KEY: "sk", AGENTBOX_SECRETS: '{"api.openai.com":{"env":"OPENAI_API_KEY","keys":["ghost"]}}' }),
+    /AGENTBOX_SECRETS for api.openai.com names key "ghost"/,
+  );
 });
 
 test("AGENTBOX_SECRETS is refused when its JSON, its variable or its header is wrong", () => {

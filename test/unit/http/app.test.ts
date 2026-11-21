@@ -146,6 +146,16 @@ test("egress log route and network in the view", async () => {
   assert.equal((await app.request("/sandboxes", { method: "POST", body: JSON.stringify({ allowHosts: ["bad host"] }) })).status, 400);
 });
 
+test("a create for a secret bound to another key is 403 for this key and 201 for the allowed one", async () => {
+  const { app } = makeApp(
+    { apiKeys: [{ name: "alice", key: "ka" }, { name: "bob", key: "kb" }] },
+    { AGENTBOX_API_KEYS: "alice:ka,bob:kb", OPENAI_API_KEY: "sk", AGENTBOX_SECRETS: '{"api.openai.com":{"env":"OPENAI_API_KEY","keys":["alice"]}}' },
+  );
+  const post = (key: string) => app.request("/sandboxes", { method: "POST", headers: { authorization: `Bearer ${key}` }, body: JSON.stringify({ secrets: ["api.openai.com"] }) });
+  assert.equal((await post("ka")).status, 201);
+  assert.equal((await post("kb")).status, 403);
+});
+
 test("PUT and GET archive carry tar bytes; the path defaults to /workspace", async () => {
   const { app } = makeApp();
   const { id } = (await (await app.request("/sandboxes", { method: "POST", body: "{}" })).json()) as { id: string };
