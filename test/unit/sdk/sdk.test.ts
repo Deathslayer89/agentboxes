@@ -32,7 +32,7 @@ let agentbox: Agentbox;
 
 before(async () => {
   const port = await new Promise<number>((resolve) => {
-    server = serve({ fetch: createApp(service, { apiKeys: [{ name: "default", key: "k1" }] }).fetch, hostname: "127.0.0.1", port: 0 }, (info) => resolve(info.port));
+    server = serve({ fetch: createApp(service, { apiKeys: [{ name: "default", key: "k1" }], adminKeys: ["default"] }).fetch, hostname: "127.0.0.1", port: 0 }, (info) => resolve(info.port));
   });
   agentbox = new Agentbox({ baseUrl: `http://127.0.0.1:${port}`, apiKey: "k1" });
 });

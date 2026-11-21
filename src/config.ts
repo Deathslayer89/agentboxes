@@ -36,6 +36,8 @@ export interface Config {
   host: string;
   // Bearer tokens and their per-key limits. Empty means auth is off, which is only allowed on loopback.
   apiKeys: ApiKey[];
+  // Names of the API keys allowed to see server-global stats and the host's resource use. Empty when auth is off.
+  adminKeys: string[];
   // Image every sandbox starts from. Templates build FROM this.
   image: string;
   // "auto" picks runsc-kvm when registered and runsc otherwise; "firecracker" uses microVMs on a KVM host. Never runc.
@@ -77,6 +79,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   };
 
   const apiKeys = parseApiKeys(env.AGENTBOX_API_KEY, env.AGENTBOX_API_KEYS);
+  const adminKeys = parseAdminKeys(env.AGENTBOX_ADMIN_KEYS, apiKeys);
   const db = pickDbPath(env, existsSync(LEGACY_DB_PATH));
   const host = env.HOST || "127.0.0.1";
   if (apiKeys.length === 0 && !["127.0.0.1", "localhost", "::1"].includes(host)) {
@@ -86,6 +89,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port: num("PORT", 7788),
     host,
     apiKeys,
+    adminKeys,
     image: env.AGENTBOX_IMAGE ?? "python:3.12-slim",
     runtime: env.AGENTBOX_RUNTIME || "auto",
     defaults: {
@@ -225,4 +229,19 @@ function nonNegativeInt(raw: string | undefined, name: string, fallback: number)
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 0) throw new Error(`${name} must be a non-negative integer, got "${raw}"`);
   return value;
+}
+
+/**
+ * Names of the API keys that may see server-global stats and the host's resource use, from AGENTBOX_ADMIN_KEYS
+ * (comma-separated key names). When unset, the key named "default" is admin, so a single-key install is unchanged.
+ * A name that matches no configured key is a startup error.
+ */
+function parseAdminKeys(raw: string | undefined, apiKeys: ApiKey[]): string[] {
+  const names = new Set(apiKeys.map((key) => key.name));
+  if (raw === undefined || raw === "") return names.has("default") ? ["default"] : [];
+  const admins = raw.split(",").map((name) => name.trim()).filter((name) => name !== "");
+  for (const name of admins) {
+    if (!names.has(name)) throw new Error(`AGENTBOX_ADMIN_KEYS names "${name}", which is not a configured API key`);
+  }
+  return admins;
 }

@@ -5,14 +5,18 @@ Every endpoint with curl, then the TypeScript and Python clients and the MCP ser
 ```bash
 # create a sandbox (all fields optional: template, memoryMb, cpus, diskMb, pids, ttlSeconds)
 curl -s -X POST localhost:7788/sandboxes -d '{}'
-# {"id":"sbx_...","status":"ready","limits":{...},"startup":{"source":"pool","ms":0.3},"createdAt":"...","expiresAt":"..."}
+# {"id":"sbx_...","status":"ready","limits":{...},"startup":{"source":"pool","ms":0.3},"createdAt":"...","expiresAt":"...","maxExpiresAt":"..."}
+# maxExpiresAt is the latest expiry extend will grant (createdAt plus MAX_LIFETIME_SECONDS); it is absent when the cap is 0
 
 # run a command
 curl -s -X POST localhost:7788/sandboxes/sbx_.../exec -d '{"cmd":["python","-c","print(2+2)"],"timeoutMs":5000}'
 # {"exitCode":0,"stdout":"4\n","stderr":"","durationMs":...,"timedOut":false,"truncated":false}
 # past timeoutMs the command and its process group are killed: exitCode 137, timedOut true. A command that pushes the
-# sandbox past its memory cap takes the whole sandbox down (gVisor is one host process); the record then says destroyed
-# within the reaper's 10 s tick, and every later call on it answers 409.
+# sandbox past its memory cap takes the whole sandbox down (gVisor is one host process); the record is marked destroyed
+# when that exec returns (or at the next reaper pass if Docker has not yet reported the container stopped) and every later
+# call on it answers 409. A timeoutMs longer than the sandbox's remaining TTL answers 409 (extend first, or create a new
+# sandbox when the remaining time is bounded by the maximum lifetime); the default timeout is clamped to the remaining
+# TTL, and a command stopped that way reports timedOut with reason "ttl".
 
 # same body, but stdout and stderr arrive as Server-Sent Events while the command runs, then an exit event
 curl -s -N -X POST localhost:7788/sandboxes/sbx_.../exec/stream -d '{"cmd":["python","-c","import time\nfor i in range(3): print(i); time.sleep(1)"]}'
@@ -31,14 +35,21 @@ curl -s "localhost:7788/sandboxes/sbx_.../files?path=main.py"
 # whole trees as tar archives: a repository in, the results out
 tar -c -C ./myrepo . | curl -s -X PUT --data-binary @- "localhost:7788/sandboxes/sbx_.../archive?path=repo"
 curl -s "localhost:7788/sandboxes/sbx_.../archive?path=repo" | tar -x -C ./out
+# a file over MAX_FILE_BYTES (default 8 MB) or an archive over MAX_ARCHIVE_BYTES (default 256 MB) is refused with 413; an upload that declares its Content-Length is rejected before its body is read, while a chunked upload is stopped once it crosses the limit and so is never fully buffered
 
-# keep a sandbox alive while it is in use: expiry becomes now plus ttlSeconds (default: its own TTL)
+# keep a sandbox alive while it is in use: expiry becomes now plus ttlSeconds (default: its own TTL), capped at the
+# sandbox's maximum lifetime from creation (MAX_LIFETIME_SECONDS, default one day); past that, extend answers 409
 curl -s -X POST localhost:7788/sandboxes/sbx_.../extend -d '{"ttlSeconds":1800}'
 
 # list (live ones; add ?all=true for expired and destroyed), get, destroy
 curl -s localhost:7788/sandboxes
 curl -s localhost:7788/sandboxes/sbx_...
 curl -s -X DELETE localhost:7788/sandboxes/sbx_...
+
+# operator views: /usage is your sandboxes plus the host block for an admin key; /stats and /metrics are admin keys only
+curl -s localhost:7788/usage
+curl -s localhost:7788/stats
+curl -s localhost:7788/metrics
 ```
 
 ## TypeScript SDK

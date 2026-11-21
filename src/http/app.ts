@@ -73,6 +73,8 @@ async function readLimitedBody(c: Context, limit: number, what: string): Promise
 export interface AppOptions {
   // When non-empty, every route except /health needs `Authorization: Bearer <key>` for one of these.
   apiKeys?: ApiKey[];
+  // Names of the keys allowed to see server-global stats and the host block; auth off means everyone is admin.
+  adminKeys?: string[];
   // Gets one line per request (except /health) and every unexpected error. Unset means no request log.
   logger?: Logger;
 }
@@ -80,10 +82,16 @@ export interface AppOptions {
 export function createApp(service: SandboxService, options: AppOptions = {}): Hono<{ Variables: { owner: string } }> {
   const app = new Hono<{ Variables: { owner: string } }>();
   const keys = options.apiKeys ?? [];
+  const admins = new Set(options.adminKeys ?? []);
   // Who is asking: the key's name, or "local" when auth is off.
   const ownerOf = (c: Context<{ Variables: { owner: string } }>) => c.get("owner") ?? LOCAL_OWNER;
   // The sandbox id from the path, after checking it belongs to the caller.
   const own = (c: Context<{ Variables: { owner: string } }>) => service.get(c.req.param("id") ?? "", ownerOf(c)).id;
+  // With auth off every caller is admin; otherwise only the keys named in AGENTBOX_ADMIN_KEYS.
+  const isAdmin = (c: Context<{ Variables: { owner: string } }>) => keys.length === 0 || admins.has(ownerOf(c));
+  const requireAdmin = (c: Context<{ Variables: { owner: string } }>) => {
+    if (!isAdmin(c)) throw new ForbiddenError("server-global stats are for admin keys only; name this key in AGENTBOX_ADMIN_KEYS to grant access");
+  };
 
   const log = options.logger;
   const unexpected = (err: unknown) => (log === undefined ? console.error(err) : log.error({ err }, "unexpected server error"));
@@ -119,11 +127,17 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
   // The page itself is open; the numbers it asks for are behind the key.
   app.get("/", (c) => c.html(STATUS_PAGE));
 
-  app.get("/stats", (c) => c.json(service.stats()));
+  app.get("/stats", (c) => {
+    requireAdmin(c);
+    return c.json(service.stats());
+  });
 
-  app.get("/usage", async (c) => c.json(await service.usage(ownerOf(c))));
+  app.get("/usage", async (c) => c.json(await service.usage(ownerOf(c), isAdmin(c))));
 
-  app.get("/metrics", (c) => c.text(service.metricsText(), 200, { "content-type": "text/plain; version=0.0.4" }));
+  app.get("/metrics", (c) => {
+    requireAdmin(c);
+    return c.text(service.metricsText(), 200, { "content-type": "text/plain; version=0.0.4" });
+  });
 
   app.get("/templates", async (c) => c.json(await service.listTemplates()));
 

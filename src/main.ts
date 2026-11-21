@@ -125,7 +125,7 @@ if (config.apiKeys.length === 0) {
   log.warn("no API key is set, so auth is off; set AGENTBOX_API_KEY and HOST=0.0.0.0 to serve other machines");
 }
 // The pid is written once the port is bound, so `npm stop` can find the server behind the npm wrapper and a server that failed to bind leaves nothing behind.
-const server = serve({ fetch: createApp(service, { apiKeys: config.apiKeys, logger: logFor("http") }).fetch, hostname: config.host, port: config.port }, (info) => {
+const server = serve({ fetch: createApp(service, { apiKeys: config.apiKeys, adminKeys: config.adminKeys, logger: logFor("http") }).fetch, hostname: config.host, port: config.port }, (info) => {
   mkdirSync(dirname(pidFile), { recursive: true });
   writeFileSync(pidFile, `${process.pid}\n`);
   log.info({ url: `http://${info.address}:${info.port}`, image: config.image, runtime: runtime.runtimeName, keys: config.apiKeys.map((k) => k.name), db: config.dbPath }, "agentbox listening");

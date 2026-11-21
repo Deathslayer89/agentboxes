@@ -36,29 +36,36 @@
   const stat = (label, value) => `<div class="stat"><b>${value}</b>${label}</div>`;
   const text = (v) => String(v).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
 
-  async function get(path) {
+  async function get(path, soft) {
     const res = await fetch(path, { headers });
     if (res.status === 401) {
       const entered = prompt("This server needs an API key");
       if (entered) { localStorage.setItem("agentboxKey", entered); location.reload(); }
       throw new Error("API key needed");
     }
+    if (soft && res.status === 403) return null;
     if (!res.ok) throw new Error(path + " answered " + res.status);
     return res.json();
   }
 
   async function tick() {
     try {
-      const [stats, usage] = await Promise.all([get("/stats"), get("/usage")]);
-      const pools = Object.entries(stats.pools).map(([name, p]) => `${p.ready}/${p.size} ${name}`).join(", ") || "none";
-      const hits = Object.values(stats.pools).reduce((n, p) => n + p.hits, 0);
-      const misses = Object.values(stats.pools).reduce((n, p) => n + p.misses, 0);
-      document.getElementById("host").innerHTML =
-        stat("sandboxes live / max", `${stats.sandboxes.live} / ${stats.sandboxes.max}`) +
-        stat("warm pool ready", text(pools)) +
-        stat("pool hits / misses", `${hits} / ${misses}`) +
-        stat(`host load (${usage.host.cpus} cpus)`, usage.host.load1.toFixed(2)) +
-        stat("host memory used", `${(usage.host.memoryUsedMb / 1024).toFixed(1)} / ${(usage.host.memoryTotalMb / 1024).toFixed(1)} GB`);
+      const [stats, usage] = await Promise.all([get("/stats", true), get("/usage")]);
+      let host = "";
+      if (stats) {
+        const pools = Object.entries(stats.pools).map(([name, p]) => `${p.ready}/${p.size} ${name}`).join(", ") || "none";
+        const hits = Object.values(stats.pools).reduce((n, p) => n + p.hits, 0);
+        const misses = Object.values(stats.pools).reduce((n, p) => n + p.misses, 0);
+        host += stat("sandboxes live / max", `${stats.sandboxes.live} / ${stats.sandboxes.max}`) +
+          stat("warm pool ready", text(pools)) +
+          stat("pool hits / misses", `${hits} / ${misses}`);
+      }
+      if (usage.host) {
+        host += stat(`host load (${usage.host.cpus} cpus)`, usage.host.load1.toFixed(2)) +
+          stat("host memory used", `${(usage.host.memoryUsedMb / 1024).toFixed(1)} / ${(usage.host.memoryTotalMb / 1024).toFixed(1)} GB`);
+      }
+      if (host === "") host = stat("your sandboxes", usage.sandboxes.length);
+      document.getElementById("host").innerHTML = host;
       document.getElementById("rows").innerHTML = usage.sandboxes.map((s) => `<tr>
         <td><code>${text(s.id)}</code></td><td>${text(s.owner)}</td><td>${text(s.template)}</td>
         <td class="${s.status === "busy" ? "warn" : "ok"}">${text(s.status)}</td>

@@ -22,7 +22,7 @@ const service = new SandboxService(
   new WarmPools(),
 );
 const apiKey = process.env.FAKE_API_KEY;
-const server = serve({ fetch: createApp(service, apiKey ? { apiKeys: [{ name: "default", key: apiKey }] } : {}).fetch, hostname: "127.0.0.1", port: 0 }, (info) => {
+const server = serve({ fetch: createApp(service, apiKey ? { apiKeys: [{ name: "default", key: apiKey }], adminKeys: ["default"] } : {}).fetch, hostname: "127.0.0.1", port: 0 }, (info) => {
   process.stdout.write(`${info.port}\n`);
 });
 process.stdin.resume();

@@ -24,7 +24,7 @@ function makeApp(options: AppOptions = {}, env: NodeJS.ProcessEnv = {}) {
     new CounterIdGenerator("sbx_"),
     new WarmPools(),
   );
-  return { app: createApp(service, options), service, runtime };
+  return { app: createApp(service, { adminKeys: config.adminKeys, ...options }), service, runtime };
 }
 
 test("the sandbox view shows maxExpiresAt when a lifetime cap is set and omits it when the cap is 0", async () => {
@@ -192,8 +192,11 @@ test("a streamed upload over the limit is refused without reading the whole body
   assert.ok(read <= 3000, `read ${read} bytes but should stop near the 1000-byte limit, not consume the whole body`);
 });
 
-test("GET / is the status page; GET /usage reports the host and the caller's own sandboxes", async () => {
-  const { app } = makeApp({ apiKeys: [{ name: "a", key: "ka" }, { name: "b", key: "kb" }] });
+test("GET / is the status page; GET /usage gives every key its own sandboxes but the host block only to an admin key", async () => {
+  const { app } = makeApp(
+    { apiKeys: [{ name: "a", key: "ka" }, { name: "b", key: "kb" }] },
+    { AGENTBOX_API_KEYS: "a:ka,b:kb", AGENTBOX_ADMIN_KEYS: "a" },
+  );
   const page = await app.request("/");
   assert.equal(page.status, 200);
   assert.match(page.headers.get("content-type") ?? "", /text\/html/);
@@ -201,12 +204,41 @@ test("GET / is the status page; GET /usage reports the host and the caller's own
   await app.request("/sandboxes", { method: "POST", headers: { authorization: "Bearer ka" }, body: "{}" });
   await app.request("/sandboxes", { method: "POST", headers: { authorization: "Bearer kb" }, body: "{}" });
   assert.equal((await app.request("/usage")).status, 401);
-  const usage = (await (await app.request("/usage", { headers: { authorization: "Bearer ka" } })).json()) as UsageReport;
-  assert.ok(usage.host.cpus > 0 && usage.host.memoryTotalMb > usage.host.memoryUsedMb);
+
+  const admin = (await (await app.request("/usage", { headers: { authorization: "Bearer ka" } })).json()) as UsageReport;
+  assert.ok(admin.host && admin.host.cpus > 0 && admin.host.memoryTotalMb > admin.host.memoryUsedMb, "the admin key sees the host block");
   assert.deepEqual(
-    usage.sandboxes.map((s) => [s.id, s.owner, s.status, s.ageSeconds, s.expiresInSeconds, s.cpuPercent, s.memoryMb, s.allowHosts]),
+    admin.sandboxes.map((s) => [s.id, s.owner, s.status, s.ageSeconds, s.expiresInSeconds, s.cpuPercent, s.memoryMb, s.allowHosts]),
     [["sbx_1", "a", "ready", 0, 600, 12.5, 64, 0]],
   );
+
+  const tenant = (await (await app.request("/usage", { headers: { authorization: "Bearer kb" } })).json()) as UsageReport;
+  assert.equal(tenant.host, undefined, "a non-admin key does not see the host block");
+  assert.deepEqual(tenant.sandboxes.map((s) => s.owner), ["b"], "but still sees its own sandbox");
+});
+
+test("a non-admin key is refused the server-global stats and metrics, an admin key is not", async () => {
+  const { app } = makeApp(
+    { apiKeys: [{ name: "ops", key: "ko" }, { name: "tenant", key: "kt" }] },
+    { AGENTBOX_API_KEYS: "ops:ko,tenant:kt", AGENTBOX_ADMIN_KEYS: "ops" },
+  );
+  for (const path of ["/stats", "/metrics"]) {
+    assert.equal((await app.request(path, { headers: { authorization: "Bearer kt" } })).status, 403, `${path} is 403 for a tenant key`);
+    assert.equal((await app.request(path, { headers: { authorization: "Bearer ko" } })).status, 200, `${path} is 200 for the admin key`);
+  }
+});
+
+test("with a single key named default, stats, metrics and the host block stay open to it with no admin config", async () => {
+  const { app } = makeApp({ apiKeys: [{ name: "default", key: "k" }] }, { AGENTBOX_API_KEY: "k" });
+  for (const path of ["/stats", "/metrics", "/usage"]) {
+    assert.equal((await app.request(path, { headers: { authorization: "Bearer k" } })).status, 200, `${path} works for the default key`);
+  }
+  const usage = (await (await app.request("/usage", { headers: { authorization: "Bearer k" } })).json()) as UsageReport;
+  assert.ok(usage.host, "the default key is admin and sees the host block");
+});
+
+test("an AGENTBOX_ADMIN_KEYS name that is not a configured key is a startup error", () => {
+  assert.throws(() => loadConfig({ AGENTBOX_API_KEYS: "a:ka", AGENTBOX_ADMIN_KEYS: "ghost" }), /AGENTBOX_ADMIN_KEYS names "ghost"/);
 });
 
 test("the request log gets one line per request, except health probes", async () => {

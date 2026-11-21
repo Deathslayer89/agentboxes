@@ -13,6 +13,15 @@
   AGENTBOX_SECRETS='{"api.openai.com":{"env":"OPENAI_API_KEY","keys":["alice"]}}'
   ```
 
+- BREAKING: the server-global views `GET /stats` and `GET /metrics`, and the host block of `GET /usage` (CPU count, load, memory), are now admin-only, so one tenant key cannot read the server's totals or the host's load. Admin keys are named in `AGENTBOX_ADMIN_KEYS` (comma-separated key names); when it is unset the key named `default` is the admin, so a single-key install is unchanged. A non-admin key gets 403 from `/stats` and `/metrics` and a `/usage` without the host block, but still sees its own sandboxes. With no API keys set, every route stays open. A name in `AGENTBOX_ADMIN_KEYS` that matches no configured key stops the server at startup.
+
+  Migration: an operator that scrapes `/stats` or `/metrics` with a tenant key must use an admin key, or add that key's name to `AGENTBOX_ADMIN_KEYS`.
+
+  ```
+  AGENTBOX_API_KEYS="ops:<key>,bot:<key>"
+  AGENTBOX_ADMIN_KEYS="ops"
+  ```
+
 - BREAKING: a sandbox now has a maximum lifetime from creation, `MAX_LIFETIME_SECONDS` (default 86400, one day; 0 disables), so a sandbox can no longer be kept alive indefinitely. `extend` cannot push a sandbox past it. The sandbox info includes `maxExpiresAt` (createdAt plus the cap), absent when the cap is 0.
 - BREAKING: an exec whose `timeoutMs` is longer than the sandbox's remaining TTL is refused with 409 instead of being allowed to run; the default timeout is clamped to the remaining TTL, and a command stopped that way reports `timedOut` with `reason: "ttl"` so it is not mistaken for an ordinary timeout. The Python client's `ExecResult` gains an optional `reason` field carrying this.
 - BREAKING: a file or archive upload larger than the limit now returns 413 (Payload Too Large) instead of 400.

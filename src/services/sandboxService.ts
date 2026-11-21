@@ -15,7 +15,7 @@ const MB = 1024 * 1024;
 
 // What the status page shows: the host's load and memory, and every live sandbox with what it uses right now.
 export interface UsageReport {
-  host: { cpus: number; load1: number; memoryTotalMb: number; memoryUsedMb: number };
+  host?: { cpus: number; load1: number; memoryTotalMb: number; memoryUsedMb: number };
   sandboxes: Array<{
     id: string;
     owner: string;
@@ -175,18 +175,12 @@ export class SandboxService {
   }
 
   // Live sandboxes of one owner (or all) with their current CPU and memory, plus the host's own numbers.
-  async usage(owner?: string): Promise<UsageReport> {
+  async usage(owner?: string, withHost = true): Promise<UsageReport> {
     const live = this.list(false, owner).filter((s) => s.handle !== undefined);
     const byHandle = await this.runtime.usage(live.map((s) => s.handle as string));
     const now = this.clock.now().getTime();
     const tenth = (n: number | undefined) => (n === undefined ? null : Math.round(n * 10) / 10);
-    return {
-      host: {
-        cpus: os.cpus().length,
-        load1: tenth(os.loadavg()[0]) ?? 0,
-        memoryTotalMb: Math.round(os.totalmem() / MB),
-        memoryUsedMb: Math.round((os.totalmem() - os.freemem()) / MB),
-      },
+    const report: UsageReport = {
       sandboxes: live.map((s) => {
         const use = byHandle[s.handle as string];
         return {
@@ -203,7 +197,17 @@ export class SandboxService {
         };
       }),
     };
+    if (withHost) {
+      report.host = {
+        cpus: os.cpus().length,
+        load1: tenth(os.loadavg()[0]) ?? 0,
+        memoryTotalMb: Math.round(os.totalmem() / MB),
+        memoryUsedMb: Math.round((os.totalmem() - os.freemem()) / MB),
+      };
+    }
+    return report;
   }
+
 
   stats(): { sandboxes: { live: number; max: number }; pools: Record<string, PoolStats> } {
     return { sandboxes: { live: this.liveCount(), max: this.config.maxSandboxes }, pools: this.pools.stats() };
