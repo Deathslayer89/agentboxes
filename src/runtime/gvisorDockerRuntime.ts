@@ -26,6 +26,9 @@ const LABEL_SERVER = "agentbox.server";
  * kill the whole container.
  */
 const GUARD_MS = 5_000;
+// A container caught in a transitional state after an exec is re-inspected up to DEATH_WATCH_POLLS * DEATH_WATCH_INTERVAL_MS (2 s), because Docker settles a sandbox's teardown a little after the exec ends; a running or already-stopped container is decided on the first inspect.
+const DEATH_WATCH_POLLS = 20;
+const DEATH_WATCH_INTERVAL_MS = 100;
 // Where PID 1 reads the sandbox's end time, as epoch seconds. Written as root, so the sandbox user cannot move it.
 const DEADLINE_FILE = "/tmp/.agentbox_deadline";
 // File reads and writes are plain `cat`; this only matters if the path is a FIFO.
@@ -358,8 +361,17 @@ export class GvisorDockerRuntime implements SandboxRuntime {
 
       const durationMs = Date.now() - startedAt;
       const { ExitCode } = await exec.inspect();
-      // ExitCode is null when the container died under us; a dead container means the sandbox is lost, whatever killed it.
-      if (ExitCode === null && !lost) lost = !(await this.running(container));
+      /**
+       * Only the exit codes a killed gVisor sandbox produces are worth watching: no code at all, 128 (the sentry's
+       * urpc/WaitPID EOF when the sandbox is torn down), or 137 (SIGKILL) when the command did not simply hit its own
+       * timeout. A normal non-zero exit such as 1, 2, 130, 143 or 255 means the sandbox is fine and is left alone.
+       * stillRunning decides from one inspect, reporting the sandbox lost only when it is OOM-killed or stopped, so a
+       * healthy sandbox that exits with one of these codes returns at once; when it is lost the record is closed now
+       * instead of at the next reaper pass.
+       */
+      const timedOut = ExitCode === 137 && durationMs >= timeoutMs;
+      const maybeDead = ExitCode === null || ExitCode === 128 || (ExitCode === 137 && !timedOut);
+      if (!lost && maybeDead) lost = !(await this.stillRunning(container));
       return {
         exitCode: lost ? 137 : (ExitCode ?? 137),
         stdout: stdout.bytes(),
@@ -375,13 +387,30 @@ export class GvisorDockerRuntime implements SandboxRuntime {
     }
   }
 
-  // False when the container has stopped or no longer exists.
-  private async running(container: Docker.Container): Promise<boolean> {
+  // The container's running flag, OOM flag and status, or undefined when it no longer exists.
+  private async stateOf(container: Docker.Container): Promise<{ Running: boolean; OOMKilled: boolean; Status: string } | undefined> {
     try {
-      return ((await container.inspect()) as { State: { Running: boolean } }).State.Running;
+      return ((await container.inspect()) as { State: { Running: boolean; OOMKilled: boolean; Status: string } }).State;
     } catch {
-      return false;
+      return undefined;
     }
+  }
+
+  /**
+   * True while the sandbox is still alive after a kill-like exit code. One inspect answers the common cases: a container
+   * still running and not OOM-killed is healthy, so a command that exits 137 or 128 on its own returns at once; an
+   * OOM-killed or stopped container is dead. Only a container Docker still reports as transitional is polled for up to
+   * DEATH_WATCH_POLLS * DEATH_WATCH_INTERVAL_MS (2 s), because it settles a sandbox's teardown a little after the exec ends.
+   */
+  private async stillRunning(container: Docker.Container): Promise<boolean> {
+    for (let i = 0; i < DEATH_WATCH_POLLS; i++) {
+      const state = await this.stateOf(container);
+      if (state === undefined || state.OOMKilled) return false;
+      if (state.Running) return true;
+      if (state.Status === "exited" || state.Status === "dead") return false;
+      await new Promise((resolve) => setTimeout(resolve, DEATH_WATCH_INTERVAL_MS));
+    }
+    return false;
   }
 
   // Kills every process in the sandbox whose environment carries the marker.

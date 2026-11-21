@@ -14,6 +14,7 @@
   ```
 
 - BREAKING: a file or archive upload larger than the limit now returns 413 (Payload Too Large) instead of 400.
+- A sandbox killed by its memory limit is marked destroyed when the exec that killed it returns, rather than staying `ready` until a reaper pass; a healthy sandbox whose command merely exits 137 or 128 on its own is left running and no longer waits on a death check.
 - The MCP server keeps one sandbox per session and shares a single create across parallel tool calls, so a burst of tools does not leave extra sandboxes running.
 - The npm package ships only the listed documentation files.
 - Two servers can share a Docker host: each labels its containers, networks and proxy with its own id and only reaps its own.

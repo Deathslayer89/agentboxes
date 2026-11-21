@@ -319,16 +319,40 @@ test("S3: a command past the memory cap takes the whole sandbox down; the reaper
   // Under gVisor the cap applies to the sandbox as one host process, so the host kills all of it, not just the command.
   const r = await service.exec(box.id, { cmd: ["python", "-c", "x = bytearray(1024 ** 3); print(len(x))"], timeoutMs: 60_000 });
   assert.notEqual(r.exitCode, 0);
-  // Docker reports the exit a moment after the exec returns; the reaper picks it up on its next pass.
-  let status = service.get(box.id).status;
-  for (let i = 0; i < 50 && status !== "destroyed"; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    await service.reap();
-    status = service.get(box.id).status;
-  }
-  assert.equal(status, "destroyed");
+  // The sandbox is marked destroyed by the exec that killed it, not left "ready" until the next reaper pass.
+  assert.equal(service.get(box.id).status, "destroyed");
   await assert.rejects(service.exec(box.id, { cmd: ["echo", "hi"] }), ConflictError);
   assert.equal((await runtime.listManaged()).some((c) => c.handle === handle), false);
+});
+
+test("S3: a command that exits non-zero without killing the sandbox returns at once and stays ready", async () => {
+  const box = await service.create();
+  try {
+    const started = Date.now();
+    const r = await service.exec(box.id, { cmd: ["sh", "-c", "exit 255"] });
+    const elapsedMs = Date.now() - started;
+    assert.equal(r.exitCode, 255);
+    assert.equal(service.get(box.id).status, "ready");
+    assert.ok(elapsedMs < 1000, `exit 255 took ${elapsedMs} ms; a normal non-zero exit must not trigger the sandbox-death watch`);
+  } finally {
+    await service.destroy(box.id);
+  }
+});
+
+test("S3: a command that exits 137 on its own leaves the sandbox healthy and returns without the death watch", async () => {
+  const box = await service.create();
+  try {
+    const started = Date.now();
+    // The command's shell SIGKILLs itself: exit 137, but PID 1 and the sandbox are untouched.
+    const r = await service.exec(box.id, { cmd: ["sh", "-c", "kill -9 $$"] });
+    const elapsedMs = Date.now() - started;
+    assert.equal(r.exitCode, 137);
+    assert.equal(service.get(box.id).status, "ready", "a healthy sandbox that exits 137 is not reported lost");
+    assert.ok(elapsedMs < 1000, `a healthy exit 137 took ${elapsedMs} ms; it must not wait on the sandbox-death watch`);
+    assert.equal((await service.exec(box.id, { cmd: ["echo", "alive"] })).stdout.trim(), "alive");
+  } finally {
+    await service.destroy(box.id);
+  }
 });
 
 test("S3: the process limit contains a fork bomb: the host and other sandboxes go on, and the sandbox is not taken down", async () => {
