@@ -167,6 +167,22 @@ test("PUT and GET archive carry tar bytes; the path defaults to /workspace", asy
   assert.equal((await app.request(`/sandboxes/${id}/archive?path=../`, { method: "PUT", body: "x" })).status, 400);
 });
 
+test("a streamed upload over the limit is refused without reading the whole body", async () => {
+  const { app } = makeApp({}, { MAX_FILE_BYTES: "1000" });
+  const { id } = (await (await app.request("/sandboxes", { method: "POST", body: "{}" })).json()) as { id: string };
+  let read = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (read >= 100_000) return controller.close();
+      read += 500;
+      controller.enqueue(new Uint8Array(500));
+    },
+  });
+  const res = await app.request(`/sandboxes/${id}/files?path=big.bin`, { method: "PUT", body, duplex: "half" } as RequestInit);
+  assert.equal(res.status, 413);
+  assert.ok(read <= 3000, `read ${read} bytes but should stop near the 1000-byte limit, not consume the whole body`);
+});
+
 test("GET / is the status page; GET /usage reports the host and the caller's own sandboxes", async () => {
   const { app } = makeApp({ apiKeys: [{ name: "a", key: "ka" }, { name: "b", key: "kb" }] });
   const page = await app.request("/");

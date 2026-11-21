@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
-import { ConflictError, DomainError, ForbiddenError, LimitExceededError, NotFoundError, UnauthorizedError, ValidationError } from "../errors.js";
+import { ConflictError, DomainError, ForbiddenError, LimitExceededError, NotFoundError, PayloadTooLargeError, UnauthorizedError, ValidationError } from "../errors.js";
 import type { Logger } from "../log.js";
 import { LOCAL_OWNER, type ApiKey } from "../models/apiKey.js";
 import type { Sandbox } from "../models/sandbox.js";
@@ -28,6 +28,7 @@ function statusFor(err: DomainError): ContentfulStatusCode {
   if (err instanceof ForbiddenError) return 403;
   if (err instanceof NotFoundError) return 404;
   if (err instanceof ConflictError) return 409;
+  if (err instanceof PayloadTooLargeError) return 413;
   if (err instanceof LimitExceededError) return 429;
   return 500;
 }
@@ -41,6 +42,29 @@ async function jsonBody(c: Context): Promise<unknown> {
   } catch {
     throw new ValidationError("body must be valid JSON");
   }
+}
+
+// Reads the request body but never holds more than `limit` bytes: it refuses a declared Content-Length over the limit and stops reading once the stream passes it.
+async function readLimitedBody(c: Context, limit: number, what: string): Promise<Buffer> {
+  const tooBig = () => new PayloadTooLargeError(`${what} is larger than the ${limit} byte limit`);
+  const declared = Number(c.req.header("content-length"));
+  if (Number.isFinite(declared) && declared > limit) throw tooBig();
+  const body = c.req.raw.body;
+  if (body === null) return Buffer.alloc(0);
+  const chunks: Buffer[] = [];
+  let total = 0;
+  const reader = body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > limit) {
+      await reader.cancel();
+      throw tooBig();
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
 }
 
 export interface AppOptions {
@@ -151,7 +175,7 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
 
   // Whole trees as tar archives, so a repository goes in or out in one request.
   app.put("/sandboxes/:id/archive", async (c) => {
-    const tar = Buffer.from(await c.req.arrayBuffer());
+    const tar = await readLimitedBody(c, service.maxArchiveBytes, "archive");
     const path = await service.putArchive(own(c), c.req.query("path") ?? "/workspace", tar);
     return c.json({ path, bytes: tar.length });
   });
@@ -167,7 +191,7 @@ export function createApp(service: SandboxService, options: AppOptions = {}): Ho
 
   // Raw bytes in and out; the path travels in the query string so the body stays unencoded.
   app.put("/sandboxes/:id/files", async (c) => {
-    const data = Buffer.from(await c.req.arrayBuffer());
+    const data = await readLimitedBody(c, service.maxFileBytes, "file");
     const path = await service.writeFile(own(c), c.req.query("path"), data);
     return c.json({ path, bytes: data.length });
   });

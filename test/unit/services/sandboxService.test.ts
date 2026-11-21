@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { FakeClock } from "../../../src/clock.js";
 import { loadConfig } from "../../../src/config.js";
-import { ConflictError, ForbiddenError, LimitExceededError, NotFoundError, ValidationError } from "../../../src/errors.js";
+import { ConflictError, ForbiddenError, LimitExceededError, NotFoundError, PayloadTooLargeError, ValidationError } from "../../../src/errors.js";
 import { CounterIdGenerator } from "../../../src/id.js";
 import { InMemorySandboxRepository } from "../../../src/repositories/sandboxRepository.js";
 import { InMemoryTemplateRepository } from "../../../src/repositories/templateRepository.js";
@@ -110,7 +110,7 @@ test("files are written and read back under /workspace; bad paths and big files 
   assert.equal((await service.readFile(id, "/workspace/src/main.py")).toString(), "print(1)");
   assert.equal([...runtime.containers.values()][0]?.files.has("/workspace/src/main.py"), true);
   await assert.rejects(service.writeFile(id, "../escape.py", Buffer.from("x")), ValidationError);
-  await assert.rejects(service.writeFile(id, "big.bin", Buffer.alloc(11)), ValidationError);
+  await assert.rejects(service.writeFile(id, "big.bin", Buffer.alloc(11)), PayloadTooLargeError);
   await assert.rejects(service.readFile(id, "missing.py"), NotFoundError);
   assert.equal(service.get(id).status, "ready");
 });
@@ -263,7 +263,7 @@ test("archives go to and from a directory under /workspace, within the size limi
   assert.equal(await service.putArchive(id, "repo", Buffer.from("tar-bytes")), "/workspace/repo");
   assert.equal([...runtime.containers.values()][0]?.files.get("/workspace/repo.tar")?.toString(), "tar-bytes");
   assert.equal((await service.getArchive(id, "repo/")).toString(), "tar-bytes");
-  await assert.rejects(service.putArchive(id, "repo", Buffer.alloc(101)), ValidationError);
+  await assert.rejects(service.putArchive(id, "repo", Buffer.alloc(101)), PayloadTooLargeError);
   await assert.rejects(service.putArchive(id, "../x", Buffer.from("t")), ValidationError);
   await assert.rejects(service.getArchive(id, "missing"), NotFoundError);
 });

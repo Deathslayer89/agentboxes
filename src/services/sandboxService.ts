@@ -1,7 +1,7 @@
 import os from "node:os";
 import type { Clock } from "../clock.js";
 import type { Config } from "../config.js";
-import { ConflictError, ForbiddenError, LimitExceededError, NotFoundError, ValidationError } from "../errors.js";
+import { ConflictError, ForbiddenError, LimitExceededError, NotFoundError, PayloadTooLargeError, ValidationError } from "../errors.js";
 import type { IdGenerator } from "../id.js";
 import { logFor, type Logger } from "../log.js";
 import { isGone, type CreateSandboxRequest, type ExecRequest, type ExecResult, type Sandbox, type SandboxLimits, type SandboxNetwork } from "../models/sandbox.js";
@@ -53,6 +53,14 @@ export class SandboxService {
     private readonly pools: WarmPools,
     private readonly log: Logger = logFor("service"),
   ) {}
+
+  // The largest file and tar archive the API accepts, so the HTTP layer can reject an oversize upload before reading it.
+  get maxFileBytes(): number {
+    return this.config.maxFileBytes;
+  }
+  get maxArchiveBytes(): number {
+    return this.config.maxArchiveBytes;
+  }
 
   async create(request: CreateSandboxRequest = {}, owner = LOCAL_OWNER): Promise<Sandbox> {
     const limits = this.applyLimits(request);
@@ -235,7 +243,7 @@ export class SandboxService {
   async writeFile(id: string, path: unknown, data: Buffer): Promise<string> {
     const absolute = resolveWorkspacePath(path);
     if (data.length > this.config.maxFileBytes) {
-      throw new ValidationError(`file is ${data.length} bytes; the limit is ${this.config.maxFileBytes}`);
+      throw new PayloadTooLargeError(`file is ${data.length} bytes; the limit is ${this.config.maxFileBytes}`);
     }
     await this.occupy(id, (handle) => this.runtime.writeFile(handle, absolute, data));
     this.log.info({ sandbox: id, path: absolute, bytes: data.length }, "file written");
@@ -253,7 +261,7 @@ export class SandboxService {
   async putArchive(id: string, dir: unknown, tar: Buffer): Promise<string> {
     const absolute = resolveWorkspaceDir(dir);
     if (tar.length > this.config.maxArchiveBytes) {
-      throw new ValidationError(`archive is ${tar.length} bytes; the limit is ${this.config.maxArchiveBytes}`);
+      throw new PayloadTooLargeError(`archive is ${tar.length} bytes; the limit is ${this.config.maxArchiveBytes}`);
     }
     await this.occupy(id, (handle) => this.runtime.putArchive(handle, absolute, tar));
     this.log.info({ sandbox: id, path: absolute, bytes: tar.length }, "archive unpacked");

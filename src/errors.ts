@@ -20,5 +20,8 @@ export class ForbiddenError extends DomainError {}
 // The server's cap on live sandboxes has been reached.
 export class LimitExceededError extends DomainError {}
 
+// An uploaded file or archive is larger than the configured limit.
+export class PayloadTooLargeError extends DomainError {}
+
 // gVisor (runsc) is not registered with Docker, or Docker cannot be reached.
 export class RuntimeUnavailableError extends DomainError {}
